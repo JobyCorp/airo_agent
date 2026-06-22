@@ -96,15 +96,16 @@ defmodule AiroAgent.Engine.LlamaCpp do
   defp ref_from_path(path) do
     {repo, revision} = repo_and_revision(path)
     file = Path.basename(path)
+    meta = AiroAgent.GGUF.metadata(path)
 
     %ModelRef{
       id: build_id(repo, file),
       repo: repo,
       revision: revision,
       quant: quant_from_filename(file),
-      family: nil,
+      family: meta.family,
       size_bytes: file_size(path),
-      ctx_max: nil,
+      ctx_max: meta.ctx_max,
       path: path,
       capabilities: [],
       engine: :llama_cpp
