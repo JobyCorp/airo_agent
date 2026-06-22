@@ -3,11 +3,12 @@ import Config
 # Evaluated at boot on the serving host. Everything host-specific lives here.
 
 hf_cache = System.get_env("AIRO_AGENT_MODEL_ROOT") || Path.expand("~/.cache/huggingface/hub")
-llama_lib = System.get_env("LLAMA_CPP_LIB") || Path.expand("~/.unsloth/llama.cpp/build/bin")
 
-llama_bin =
-  System.get_env("LLAMA_SERVER_BIN") ||
-    Path.expand("~/.unsloth/llama.cpp/build/bin/llama-server")
+# Engine location is host-specific — set via env in the systemd unit. Defaults
+# stay neutral (binary resolved on PATH, no LD_LIBRARY_PATH) rather than baking
+# in a build path.
+llama_lib = System.get_env("LLAMA_CPP_LIB")
+llama_bin = System.get_env("LLAMA_SERVER_BIN") || "llama-server"
 
 token = System.get_env("AIRO_AGENT_TOKEN")
 
