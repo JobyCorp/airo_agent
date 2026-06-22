@@ -27,7 +27,29 @@ host_id =
 # Exposure is EXPLICIT and decoupled from the token: set AIRO_AGENT_ADVERTISE_HOST
 # to the host's LAN IP to serve the fleet; leave it unset for loopback-only dev.
 # The token, when set, is OPTIONAL bearer auth layered on top — no longer the gate.
-advertise_host = System.get_env("AIRO_AGENT_ADVERTISE_HOST") || "127.0.0.1"
+# Routable address Airo reaches this host on. Agents are distributed across the
+# network, so we must NOT advertise loopback (Airo can't reach 127.0.0.1 on a
+# different box). Detect the primary LAN IP — the source IP of the default route
+# (opens a UDP socket but sends no packets). Override with AIRO_AGENT_ADVERTISE_HOST
+# (e.g. a stable FQDN); falls back to loopback only when there's no routable IP.
+detect_primary_ip = fn ->
+  with {:ok, sock} <- :gen_udp.open(0),
+       :ok <- :gen_udp.connect(sock, {1, 1, 1, 1}, 9),
+       {:ok, {addr, _port}} <- :inet.sockname(sock) do
+    :gen_udp.close(sock)
+
+    case addr do
+      {127, _, _, _} -> nil
+      _ -> addr |> :inet.ntoa() |> to_string()
+    end
+  else
+    _ -> nil
+  end
+end
+
+advertise_host =
+  System.get_env("AIRO_AGENT_ADVERTISE_HOST") || detect_primary_ip.() || "127.0.0.1"
+
 exposed? = advertise_host not in ["127.0.0.1", "localhost", "::1"]
 
 # Serving slots (Model 2): the static ports this host exposes, one resident
@@ -43,8 +65,8 @@ config :airo_agent,
   api_token: token,
   # Control-plane bind: LAN when exposed, else loopback. Independent of the token.
   bind_ip: if(exposed?, do: {0, 0, 0, 0}, else: {127, 0, 0, 1}),
-  # Host stamped into InstanceInfo.base_url so off-box Airo can reach the engine
-  # (engine is always co-located with the agent; only the port is dynamic).
+  # Routable host stamped into each slot's base_url + the agent control_url, so a
+  # remote Airo can reach this host's engines and control API.
   advertise_host: advertise_host,
   # The engine's own --host: 0.0.0.0 when exposed (matches vllm/ollama), else loopback.
   engine_bind_host: if(exposed?, do: "0.0.0.0", else: "127.0.0.1"),
