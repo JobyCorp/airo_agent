@@ -60,8 +60,12 @@ slots =
   |> String.split(",", trim: true)
   |> Enum.map(&(&1 |> String.trim() |> String.to_integer()))
 
+# In test, bind an OS-assigned port (0) so the test app's control API never
+# clashes with a running agent service holding 4400.
+default_port = if config_env() == :test, do: "0", else: "4400"
+
 config :airo_agent,
-  api_port: String.to_integer(System.get_env("AIRO_AGENT_PORT") || "4400"),
+  api_port: String.to_integer(System.get_env("AIRO_AGENT_PORT") || default_port),
   api_token: token,
   # Control-plane bind: LAN when exposed, else loopback. Independent of the token.
   bind_ip: if(exposed?, do: {0, 0, 0, 0}, else: {127, 0, 0, 1}),

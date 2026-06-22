@@ -36,6 +36,8 @@ defmodule AiroAgent.Notifier.Channel do
 
   @impl Slipstream
   def init(config) do
+    # Self-rescheduling heartbeat (set up once; pushes only while joined).
+    Process.send_after(self(), :heartbeat, heartbeat_ms())
     {:ok, connect!(config)}
   end
 
@@ -80,6 +82,15 @@ defmodule AiroAgent.Notifier.Channel do
     {:noreply, socket}
   end
 
+  # Periodic re-register: Airo never polls, so push fresh GPU telemetry + current
+  # slot state on a timer. Re-pushing the full register also keeps deployment
+  # health from decaying to :unknown between transitions.
+  def handle_info(:heartbeat, socket) do
+    if connected?(socket) and joined?(socket, topic()), do: push_register(socket)
+    Process.send_after(self(), :heartbeat, heartbeat_ms())
+    {:noreply, socket}
+  end
+
   # --- payloads ---
 
   defp push_register(socket) do
@@ -91,11 +102,14 @@ defmodule AiroAgent.Notifier.Channel do
     %{
       port: e.port,
       resident_model: e.resident_model,
+      revision: e.revision,
       status: e.type,
       reason: serialize_reason(e.reason),
       at: e.at
     }
   end
+
+  defp heartbeat_ms, do: Application.get_env(:airo_agent, :heartbeat_ms, 10_000)
 
   defp serialize_reason(nil), do: nil
   defp serialize_reason(reason) when is_binary(reason), do: reason

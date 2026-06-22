@@ -41,7 +41,8 @@ defmodule AiroAgent.FleetTest do
     assert info.port == @slot
     assert info.status == :loading
     assert info.resident_model == "m1"
-    assert info.base_url == "http://127.0.0.1:#{@slot}/v1"
+    host = Application.get_env(:airo_agent, :advertise_host)
+    assert info.base_url == "http://#{host}:#{@slot}/v1"
     assert_receive {:event, %Event{type: :loading, port: @slot, resident_model: "m1"}}
   end
 

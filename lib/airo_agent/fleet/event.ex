@@ -17,10 +17,11 @@ defmodule AiroAgent.Fleet.Event do
           type: type(),
           port: pos_integer(),
           resident_model: String.t() | nil,
+          revision: String.t() | nil,
           reason: term() | nil,
           at: DateTime.t()
         }
 
   @enforce_keys [:type, :port, :at]
-  defstruct [:type, :port, :resident_model, :reason, :at]
+  defstruct [:type, :port, :resident_model, :revision, :reason, :at]
 end

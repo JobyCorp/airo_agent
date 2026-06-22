@@ -201,6 +201,7 @@ defmodule AiroAgent.Fleet do
       type: type,
       port: slot.port,
       resident_model: slot.model && slot.model.id,
+      revision: slot.model && slot.model.revision,
       reason: reason,
       at: DateTime.utc_now()
     })
