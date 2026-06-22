@@ -68,8 +68,15 @@ defmodule AiroAgent.Notifier.Channel do
   end
 
   @impl Slipstream
-  def handle_topic_close(_topic, _reason, socket) do
-    {:ok, rejoin(socket, topic())}
+  def handle_topic_close(topic, _reason, socket) do
+    # rejoin/3 returns {:ok, socket} | {:error, :never_joined} (NOT a bare socket),
+    # so wrapping it in another {:ok, _} crashes the callback dispatch. A *rejected*
+    # join is "never joined" → fall back to a full reconnect (re-joins on backoff)
+    # instead of tight-looping. Either branch returns a valid {:ok, %Socket{}}.
+    case rejoin(socket, topic) do
+      {:ok, socket} -> {:ok, socket}
+      {:error, _reason} -> {:ok, reconnect(socket)}
+    end
   end
 
   # Fleet → publish/1 → here. Drop if not joined: the next register reconciles.
