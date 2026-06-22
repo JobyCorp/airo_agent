@@ -21,7 +21,7 @@ defmodule AiroAgent.Api.Router do
   plug(:match)
   plug(:dispatch)
 
-  @profile_keys ~w(ctx ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type parallel ld_library_path extra_argv)
+  @profile_keys ~w(ctx ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type parallel jinja chat_template reasoning_budget reasoning_format ld_library_path extra_argv)
 
   get("/health", do: json(conn, 200, %{status: "ok"}))
 

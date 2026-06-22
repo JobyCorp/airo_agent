@@ -30,9 +30,10 @@ defmodule AiroAgent.Engine.LlamaCpp do
   @impl true
   def launch_spec(%ModelRef{path: path} = model, profile, port) do
     profile = Map.merge(default_profile(model), profile)
+    host = Application.get_env(:airo_agent, :engine_bind_host, "127.0.0.1")
 
     argv =
-      ["-m", path, "--host", "127.0.0.1", "--port", Integer.to_string(port)] ++
+      ["-m", path, "--host", host, "--port", Integer.to_string(port)] ++
         flag("-c", profile[:ctx]) ++
         flag("-ngl", profile[:ngl]) ++
         flag("-ncmoe", profile[:n_cpu_moe]) ++
@@ -41,6 +42,11 @@ defmodule AiroAgent.Engine.LlamaCpp do
         flag("--cache-type-v", profile[:cache_type_v]) ++
         flag("--spec-type", profile[:spec_type]) ++
         flag("--parallel", profile[:parallel]) ++
+        # Tool-use + thinking knobs (launch-time identity; restart-on-change):
+        bool_flag("--jinja", profile[:jinja]) ++
+        flag("--chat-template", profile[:chat_template]) ++
+        flag("--reasoning-budget", profile[:reasoning_budget]) ++
+        flag("--reasoning-format", profile[:reasoning_format]) ++
         List.wrap(profile[:extra_argv])
 
     env =
@@ -66,6 +72,9 @@ defmodule AiroAgent.Engine.LlamaCpp do
       cache_type_k: "q8_0",
       cache_type_v: "q8_0",
       parallel: 4,
+      # On by default: use the model's embedded chat template so tool calls parse
+      # (unsloth Qwen GGUFs ship one). Airo can override per-profile with false.
+      jinja: true,
       # MTP only when the GGUF actually ships an MTP head.
       spec_type: if(mtp?(model), do: "draft-mtp", else: nil),
       ld_library_path: Application.get_env(:airo_agent, :llama_cpp_lib_path)
@@ -157,4 +166,8 @@ defmodule AiroAgent.Engine.LlamaCpp do
 
   defp flag(_k, nil), do: []
   defp flag(k, v), do: [k, to_string(v)]
+
+  # Valueless switches (e.g. --jinja): emit the flag only when explicitly on.
+  defp bool_flag(k, true), do: [k]
+  defp bool_flag(_k, _), do: []
 end

@@ -72,14 +72,18 @@ defmodule AiroAgent.Instance do
   defp ready?(_), do: false
 
   defp to_info(s) do
+    # Advertise the routable host (engine is co-located with the agent; only the
+    # port is dynamic). Readiness checks still use loopback — see ready?/1.
+    host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
+
     %InstanceInfo{
       model_id: s.model.id,
       revision: s.model.revision,
       engine: s.model.engine,
-      host: "127.0.0.1",
+      host: host,
       port: s.port,
       status: s.status,
-      base_url: "http://127.0.0.1:#{s.port}/v1",
+      base_url: "http://#{host}:#{s.port}/v1",
       started_at: s.started_at
     }
   end
