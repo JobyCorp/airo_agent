@@ -32,6 +32,7 @@ defmodule AiroAgent.Engine.LlamaCpp do
     profile = Map.merge(default_profile(model), profile)
     host = Application.get_env(:airo_agent, :engine_bind_host, "127.0.0.1")
 
+    # Tool-use + thinking knobs (launch-time identity; restart-on-change):
     argv =
       ["-m", path, "--host", host, "--port", Integer.to_string(port)] ++
         flag("-c", profile[:ctx]) ++
@@ -42,7 +43,6 @@ defmodule AiroAgent.Engine.LlamaCpp do
         flag("--cache-type-v", profile[:cache_type_v]) ++
         flag("--spec-type", profile[:spec_type]) ++
         flag("--parallel", profile[:parallel]) ++
-        # Tool-use + thinking knobs (launch-time identity; restart-on-change):
         bool_flag("--jinja", profile[:jinja]) ++
         flag("--chat-template", profile[:chat_template]) ++
         flag("--reasoning-budget", profile[:reasoning_budget]) ++

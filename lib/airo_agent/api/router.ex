@@ -14,7 +14,7 @@ defmodule AiroAgent.Api.Router do
   """
 
   use Plug.Router
-  alias AiroAgent.{Inventory, Instances, GPU}
+  alias AiroAgent.{Inventory, Fleet, GPU}
 
   plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
   plug(AiroAgent.Api.Auth)
@@ -34,7 +34,7 @@ defmodule AiroAgent.Api.Router do
   end
 
   get "/running" do
-    json(conn, 200, %{instances: Enum.map(Instances.running(), &Map.from_struct/1)})
+    json(conn, 200, %{instances: Enum.map(Fleet.running(), &Map.from_struct/1)})
   end
 
   get("/gpu", do: json(conn, 200, GPU.snapshot()))
@@ -44,8 +44,12 @@ defmodule AiroAgent.Api.Router do
       %{"model" => id} ->
         profile = conn.body_params |> Map.get("profile", %{}) |> atomize_profile()
 
-        case Instances.load(id, profile) do
-          {:ok, info} -> json(conn, 200, Map.from_struct(info))
+        # Inventory resolves the id → ModelRef (provenance); Fleet owns lifecycle.
+        with {:ok, model} <- Inventory.get(id),
+             {:ok, info} <- Fleet.load(model, profile) do
+          json(conn, 200, Map.from_struct(info))
+        else
+          {:error, :not_found} -> json(conn, 404, %{error: "unknown model", model: id})
           {:error, reason} -> json(conn, 422, %{error: inspect(reason)})
         end
 
@@ -57,7 +61,7 @@ defmodule AiroAgent.Api.Router do
   post "/unload" do
     case conn.body_params do
       %{"model" => id} ->
-        case Instances.unload(id) do
+        case Fleet.unload(id) do
           :ok -> json(conn, 200, %{ok: true})
           {:error, reason} -> json(conn, 404, %{error: inspect(reason)})
         end

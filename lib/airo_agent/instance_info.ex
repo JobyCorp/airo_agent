@@ -5,7 +5,9 @@ defmodule AiroAgent.InstanceInfo do
   the agent is never on the data path.
   """
 
-  @type status :: :loading | :up | :down
+  # A *running* instance is either still loading or serving. Terminal transitions
+  # (:down/:failed/:unloaded) are `AiroAgent.Fleet.Event`s, not instance states.
+  @type status :: :loading | :up
 
   @type t :: %__MODULE__{
           model_id: String.t(),

@@ -4,18 +4,17 @@ defmodule AiroAgent.Instance do
   (CUDA OOM, MTP edge case, segfault) is isolated to this supervised child and
   reaped cleanly — it never touches the agent VM, let alone Airo.
 
-  `restart: :temporary` — a model that dies is reported `:down`; Airo decides
-  whether to reload. We do not silently respawn into a crash loop.
+  `restart: :temporary` — a dead model is NOT silently respawned. The Instance
+  only reports readiness up to `AiroAgent.Fleet` (which owns canonical state and
+  emits the lifecycle events); on engine exit it stops, and Fleet's monitor turns
+  that into a `:down`/`:failed`/`:unloaded` event.
   """
 
   use GenServer, restart: :temporary
-  require Logger
-  alias AiroAgent.{Engine, InstanceInfo, ModelRef}
+
+  alias AiroAgent.{Engine, Fleet, ModelRef}
 
   def start_link(spec), do: GenServer.start_link(__MODULE__, spec)
-
-  @spec info(pid()) :: InstanceInfo.t()
-  def info(pid), do: GenServer.call(pid, :info)
 
   @impl true
   def init(%{model: %ModelRef{} = model, profile: profile, port: port}) do
@@ -28,35 +27,30 @@ defmodule AiroAgent.Instance do
       schedule_readiness()
 
       {:ok,
-       %{
-         model: model,
-         port: port,
-         daemon: daemon,
-         readiness: launch.readiness,
-         status: :loading,
-         started_at: DateTime.utc_now()
-       }}
+       %{model: model, port: port, daemon: daemon, readiness: launch.readiness, ready?: false}}
     else
       {:error, reason} -> {:stop, reason}
     end
   end
 
   @impl true
-  def handle_call(:info, _from, state), do: {:reply, to_info(state), state}
-
-  @impl true
   def handle_info(:check_ready, state) do
-    if ready?(state) do
-      Logger.info("instance up: #{state.model.id} on :#{state.port}")
-      {:noreply, %{state | status: :up}}
-    else
-      schedule_readiness()
-      {:noreply, state}
+    cond do
+      state.ready? ->
+        {:noreply, state}
+
+      ready?(state) ->
+        Fleet.mark_up(self())
+        {:noreply, %{state | ready?: true}}
+
+      true ->
+        schedule_readiness()
+        {:noreply, state}
     end
   end
 
   def handle_info({:EXIT, _pid, reason}, state) do
-    Logger.warning("engine exited for #{state.model.id}: #{inspect(reason)}")
+    # The engine died; stop so Fleet's monitor classifies and emits the event.
     {:stop, reason, state}
   end
 
@@ -70,23 +64,6 @@ defmodule AiroAgent.Instance do
   end
 
   defp ready?(_), do: false
-
-  defp to_info(s) do
-    # Advertise the routable host (engine is co-located with the agent; only the
-    # port is dynamic). Readiness checks still use loopback — see ready?/1.
-    host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
-
-    %InstanceInfo{
-      model_id: s.model.id,
-      revision: s.model.revision,
-      engine: s.model.engine,
-      host: host,
-      port: s.port,
-      status: s.status,
-      base_url: "http://#{host}:#{s.port}/v1",
-      started_at: s.started_at
-    }
-  end
 
   defp bin_for(engine) do
     Application.get_env(:airo_agent, :engine_bin, %{})

@@ -12,6 +12,8 @@ defmodule AiroAgent.Application do
       AiroAgent.Inventory,
       # One supervised OS process per *running* engine instance.
       AiroAgent.Instances,
+      # Canonical in-memory state + lifecycle-event emitter; load/unload route here.
+      AiroAgent.Fleet,
       # Control-plane HTTP API. NOT on the inference data path.
       {Bandit, plug: AiroAgent.Api.Router, scheme: :http, ip: bind_ip(), port: api_port()}
     ]
