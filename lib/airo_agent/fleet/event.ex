@@ -1,32 +1,26 @@
 defmodule AiroAgent.Fleet.Event do
   @moduledoc """
-  A lifecycle transition the agent pushes to Airo (the payload `AiroAgent.Notifier`
-  delivers). `:loading`/`:up` carry the live `InstanceInfo`; the terminal events
-  carry the last snapshot plus a `reason`.
+  A **slot** lifecycle transition the agent pushes to Airo (a `"slot"` channel
+  message). Carries the slot `port`, the model involved (`resident_model`), and a
+  `reason` for the terminal cases.
 
-  - `:loading`  — instance started, engine up, not yet serving.
-  - `:up`       — readiness predicate satisfied; serving.
-  - `:down`     — was serving, then exited unexpectedly (crash/OOM). `reason` set.
-  - `:failed`   — exited before ever becoming ready. `reason` set.
-  - `:unloaded` — terminated on Airo's request. Not a failure; `reason` is nil.
-
-  `:down`/`:failed` are EDGES — once emitted the instance is gone from
-  `AiroAgent.Fleet.running/0`; Airo also reconciles down-ness from absence in the
-  next snapshot, so a dropped event self-heals.
+  - `:loading`  — a model is being loaded into the slot.
+  - `:up`       — the model is serving.
+  - `:down`     — the resident engine exited unexpectedly (`reason` set).
+  - `:failed`   — the engine never became ready (`reason` set).
+  - `:unloaded` — the slot was freed on request.
   """
-
-  alias AiroAgent.InstanceInfo
 
   @type type :: :loading | :up | :down | :failed | :unloaded
 
   @type t :: %__MODULE__{
           type: type(),
-          model_id: String.t(),
-          info: InstanceInfo.t() | nil,
+          port: pos_integer(),
+          resident_model: String.t() | nil,
           reason: term() | nil,
           at: DateTime.t()
         }
 
-  @enforce_keys [:type, :model_id, :at]
-  defstruct [:type, :model_id, :info, :reason, :at]
+  @enforce_keys [:type, :port, :at]
+  defstruct [:type, :port, :resident_model, :reason, :at]
 end

@@ -30,6 +30,14 @@ host_id =
 advertise_host = System.get_env("AIRO_AGENT_ADVERTISE_HOST") || "127.0.0.1"
 exposed? = advertise_host not in ["127.0.0.1", "localhost", "::1"]
 
+# Serving slots (Model 2): the static ports this host exposes, one resident
+# model each. Concurrency = more slots. Declared up front so each is a durable,
+# real serving endpoint. Default: a single slot.
+slots =
+  (System.get_env("AIRO_AGENT_SLOTS") || "8081")
+  |> String.split(",", trim: true)
+  |> Enum.map(&(&1 |> String.trim() |> String.to_integer()))
+
 config :airo_agent,
   api_port: String.to_integer(System.get_env("AIRO_AGENT_PORT") || "4400"),
   api_token: token,
@@ -40,6 +48,8 @@ config :airo_agent,
   advertise_host: advertise_host,
   # The engine's own --host: 0.0.0.0 when exposed (matches vllm/ollama), else loopback.
   engine_bind_host: if(exposed?, do: "0.0.0.0", else: "127.0.0.1"),
+  # Static serving slots (ports), one resident model each.
+  slots: slots,
   model_roots: [hf_cache],
   llama_cpp_lib_path: llama_lib,
   engine_bin: %{llama_cpp: llama_bin},

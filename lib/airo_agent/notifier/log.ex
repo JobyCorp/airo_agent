@@ -1,7 +1,7 @@
 defmodule AiroAgent.Notifier.Log do
   @moduledoc """
-  Default `AiroAgent.Notifier`: logs each lifecycle event. A placeholder until the
-  channel client (decision #3) lands, and a useful fallback for loopback dev.
+  Default `AiroAgent.Notifier`: logs each slot transition. A placeholder until a
+  channel client is configured, and a useful fallback for loopback dev.
   """
 
   @behaviour AiroAgent.Notifier
@@ -10,9 +10,9 @@ defmodule AiroAgent.Notifier.Log do
   alias AiroAgent.Fleet.Event
 
   @impl true
-  def publish(%Event{type: type, model_id: id, reason: reason}) do
+  def publish(%Event{type: type, port: port, resident_model: model, reason: reason}) do
     detail = if reason, do: " (#{inspect(reason)})", else: ""
-    Logger.info("fleet event: #{type} #{id}#{detail}")
+    Logger.info("slot :#{port} #{type} #{model || "(none)"}#{detail}")
     :ok
   end
 end

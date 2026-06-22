@@ -3,10 +3,10 @@ defmodule AiroAgent.Notifier.Channel do
   `slipstream` client that connects to Airo's `/agent` socket and pushes Fleet
   lifecycle state (decision #3). Airo is the server; this is the client.
 
-  Implements `AiroAgent.Notifier`: `publish/1` hands the event to this process,
-  which pushes it on the channel. On join and every rejoin it pushes a full
-  snapshot, so events dropped while disconnected self-heal — Airo reconciles its
-  view of the host from the snapshot (absent ⇒ down).
+  Implements `AiroAgent.Notifier`: `publish/1` hands the slot event to this
+  process, which pushes it as a `"slot"` message. On join and every rejoin it
+  pushes a full `"register"` (agent identity + all slots), so events dropped
+  while disconnected self-heal — Airo reconciles the host from the register.
 
   Started only when `AIRO_SOCKET_URL` is configured (see `runtime.exs`); otherwise
   the agent uses `AiroAgent.Notifier.Log` and this process isn't in the tree.
@@ -47,14 +47,14 @@ defmodule AiroAgent.Notifier.Channel do
 
   @impl Slipstream
   def handle_join(_topic, _reply, socket) do
-    push_snapshot(socket)
+    push_register(socket)
     {:ok, socket}
   end
 
-  # Airo asks for a fresh snapshot (e.g. after Airo restarts).
+  # Airo asks for a fresh registration (e.g. after Airo restarts).
   @impl Slipstream
   def handle_message(_topic, "resync", _payload, socket) do
-    push_snapshot(socket)
+    push_register(socket)
     {:ok, socket}
   end
 
@@ -70,11 +70,11 @@ defmodule AiroAgent.Notifier.Channel do
     {:ok, rejoin(socket, topic())}
   end
 
-  # Fleet → publish/1 → here. Drop if not joined: the next snapshot reconciles.
+  # Fleet → publish/1 → here. Drop if not joined: the next register reconciles.
   @impl Slipstream
   def handle_info({:publish, %Event{} = event}, socket) do
     if joined?(socket, topic()) do
-      push(socket, topic(), "event", serialize_event(event))
+      push(socket, topic(), "slot", slot_event(event))
     end
 
     {:noreply, socket}
@@ -82,16 +82,16 @@ defmodule AiroAgent.Notifier.Channel do
 
   # --- payloads ---
 
-  defp push_snapshot(socket) do
-    instances = Enum.map(Fleet.snapshot(), &Map.from_struct/1)
-    push(socket, topic(), "snapshot", %{instances: instances, agent: agent_meta()})
+  defp push_register(socket) do
+    payload = %{agent: agent_meta(), slots: Enum.map(Fleet.slots(), &Map.from_struct/1)}
+    push(socket, topic(), "register", payload)
   end
 
-  defp serialize_event(%Event{} = e) do
+  defp slot_event(%Event{} = e) do
     %{
-      type: e.type,
-      model_id: e.model_id,
-      info: e.info && Map.from_struct(e.info),
+      port: e.port,
+      resident_model: e.resident_model,
+      status: e.type,
       reason: serialize_reason(e.reason),
       at: e.at
     }
@@ -103,9 +103,16 @@ defmodule AiroAgent.Notifier.Channel do
 
   defp agent_meta do
     %{
-      advertise_host: Application.get_env(:airo_agent, :advertise_host, "127.0.0.1"),
-      version: to_string(Application.spec(:airo_agent, :vsn) || "")
+      control_url: control_url(),
+      version: to_string(Application.spec(:airo_agent, :vsn) || ""),
+      gpu: AiroAgent.GPU.snapshot()
     }
+  end
+
+  defp control_url do
+    host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
+    port = Application.get_env(:airo_agent, :api_port, 4400)
+    "http://#{host}:#{port}"
   end
 
   # --- config ---

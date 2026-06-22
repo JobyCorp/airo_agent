@@ -1,135 +1,244 @@
-# airo_agent — host-side control surface for local model serving
+# airo_agent — host-side model-serving control plane
 
 ## Purpose
 
-`airo_agent` is a small OTP service that runs **on each model-serving host** and
-gives Airo a clean, engine-neutral **control surface** over a local inference
-engine — the kind of knobs LM Studio exposes, but headless and consumed by Airo
-instead of a GUI.
+`airo_agent` is a small OTP service that runs **on each model-serving host**. It
+is a **control plane** over local inference engines (`llama-server` now,
+vLLM/TGI later): it starts and stops engines, swaps which model each one serves,
+surfaces local-model provenance, and reports host telemetry — and it pushes all
+of that to Airo over a channel so Airo never has to poll.
 
-It exists because traditional backends (Ollama, LM Studio, Unsloth Studio) are
-**opaque about model identity**. They tell Airo `qwen3:4b`, not *which* GGUF /
-HF revision. Airo's model shelf already has the schema for provenance and
-per-revision performance (`VERSION`, `REVISION`, version-performance panel) — it
-just lacks a backend that tells it the truth. `airo_agent` is that backend,
-because **Airo (via the agent) chooses the exact artifact**, so the snapshot sha
-*is* the revision.
+It is **not** a server of models and it is **not** a provider. The engine
+(`llama-server`) is the server; Airo is the brain. `airo_agent` is the
+mechanism in between.
 
-## Boundary (the one rule)
+## The one rule — three layers, one job each
 
-> **Mechanism in the agent. Policy and the data path in Airo.**
+> **Engine serves. Agent controls. Airo decides.**
 
-| Layer | Owns |
-|---|---|
-| **Airo** | Router, manager, **model shelf**. Provenance, version-performance, HF-update detection, **load/evict policy**. Routes inference. Drives serving *only* by calling the agent. Never spawns an engine. |
-| **airo_agent** | The control surface. Inventory (with provenance), engine lifecycle (load/unload/running), GPU telemetry. The *mechanism*. |
-| **engine** (`llama-server` now; vLLM/TGI later) | Serves inference. Airo calls it **directly**. |
+| Layer | Is | Owns |
+|---|---|---|
+| **Engine** (an Airo **Provider**) | the server | OpenAI-compatible inference on a **static** port. Spawned by the agent, or run externally. |
+| **airo_agent** | the mechanism | for engines **it spawned**: start/stop, load/unload/swap a model, provenance inventory, host GPU/VRAM telemetry, health push. |
+| **Airo** | the intent | routing, load/evict/VRAM **policy**, the model shelf, host grouping. |
 
-The agent is **never on the inference data path** — that's the explicit reason
-we did *not* use `llama-swap` (a data-path proxy that duplicates Airo's gateway,
-model list, and swap policy). Airo gets `base_url` from the agent and connects
-straight to the engine.
+Everything below is a consequence of this table. When a question is ambiguous,
+resolve it by asking which layer the concern belongs to.
 
-## Components (supervision tree)
+## Topology (Model 2: one agent, N providers)
 
 ```
-AiroAgent.Supervisor (:one_for_one)
-├── AiroAgent.GPU            # nvidia-smi telemetry, polled + cached
-├── AiroAgent.Inventory      # local catalog w/ provenance (HF snapshot sha = revision)
-├── AiroAgent.Instances      # DynamicSupervisor: one OS process per running model
-│     └── AiroAgent.Instance # owns a llama-server via MuonTrap.Daemon (restart: :temporary)
-└── Bandit(AiroAgent.Api.Router)   # control API; loopback unless a token is set
+HOST = AGENT  (one control plane per host; owns the host GPU view)   ← Airo's /agents entity
+ ├─ spawns → Provider "slot A"  llama-server :8081/v1   ┐ agent_id = this agent
+ ├─ spawns → Provider "slot B"  llama-server :8082/v1   ┘  (managed)
+ └─ (external) vLLM :8000/v1  →  Provider               agent_id = null  (unmanaged; agent ignores)
+
+   serving ──►  provider.base_url        (real, static — a genuine OpenAI endpoint)
+   control ──►  the host agent           (load/unload/swap per slot, over its own control API)
+   GPU/VRAM ─►  the host agent           (host-level; reported to Airo as policy input)
+   policy   ──►  Airo                     (what to load/evict, using that telemetry)
 ```
 
-Crash isolation is the point of doing this in OTP: a native engine crash (CUDA
-OOM, MTP edge case, segfault) dies inside one supervised `Instance`, is reaped
-by MuonTrap, and never takes down the agent — let alone Airo. (This is exactly
-why the engine is an external process, **not** a NIF. Contrast Ortex, which is
-correctly a NIF: small, CPU, stable.)
+The decisive point: **the agent is not a provider.** The *engines* are the
+providers. The agent is a separate, host-resident control plane that manages the
+engines it spawns.
 
-## Engine-neutral seam
+## Roles & responsibilities
 
-`AiroAgent.Engine` is a behaviour; everything backend-specific is behind it:
+**The agent IS responsible for** (only for engines it spawned):
 
-- `inventory/1` — enumerate local models with provenance.
-- `launch_spec/3` — **pure** argv/env builder for `{model, profile, port}`.
-- `default_profile/1` — sane defaults (e.g. `--flash-attn on`, q8_0 KV, `--spec-type draft-mtp` when the GGUF ships an MTP head).
-- `capabilities/1`.
+1. **Engine lifecycle** — spawn and supervise an engine process per serving
+   slot, crash-isolated; load / unload / **swap** the resident model.
+2. **Slot registration** — register each slot with Airo as a real Provider
+   (stable `base_url`) and keep its resident-model + up/down state in sync.
+3. **Provenance inventory** — scan local artifacts; resolve the HF snapshot sha
+   (`revision`) — the fact Ollama/LM Studio can't give.
+4. **Host telemetry** — GPU/VRAM for the host; pushed to Airo as policy input.
+5. **Health push** — engine readiness/liveness over the channel; no Airo polling.
 
-Process supervision, readiness polling, and the HTTP API are generic. Adding
-vLLM later = one new adapter module; the contract Airo speaks does not change.
-`profile` is an **opaque per-engine blob** Airo stores on the shelf and passes
-through verbatim.
+**The agent IS NOT:**
 
-Keeping `--spec-type draft-mtp` available is a first-class reason to wrap a
-*bare* `llama-server` from our own build rather than a vendor runtime: the MTP
-speedup survives.
+- **A provider, or on the inference data path.** It never serves or proxies a
+  token. Airo's OpenAI client connects to the *engine* directly.
+- **The router or the load/evict/VRAM decider.** It receives a launch profile
+  and a load/unload command and *executes* them. It never *decides*.
+- **An adopter of foreign engines.** It manages only engines it spawned. An
+  externally-run vLLM/llama-server is a plain static Provider (`agent_id = null`)
+  that Airo talks to directly; the agent neither wraps nor touches it. **No
+  provider needs any Airo-specific customization** — engines are stock
+  OpenAI-compatible binaries.
+- **A cross-host brain.** One agent per host; Airo aggregates the fleet.
+- **A model fetcher.** Acquisition (HF download) is out of band for now.
+
+## Core concepts
+
+- **Provider (the engine).** A durable, OpenAI-compatible serving endpoint at a
+  **stable port**. `base_url` is a real inference URL. For managed providers,
+  `Provider.agent_id` points at the managing agent; for external ones it is
+  `null`. This is unchanged from how Airo already models vLLM/Ollama — the
+  engine just happens to be agent-managed.
+- **Slot.** The intuition for a *managed* Provider: a stable serving port that
+  holds **one model at a time**. The agent swaps models into a slot. Concurrency
+  on a host = **more slots** (more ports), each its own Provider. A single-GPU
+  box that runs one big model = one slot; a big-VRAM box = a few. Slots are
+  **declared** (a configured port set), so they're durable — no dynamic-port
+  churn.
+- **Agent (Airo entity).** One per host: `host_id`, `control_url`, version, GPU
+  telemetry, presence. Surfaced in Airo's `/agents` view. It *manages* providers
+  but is not itself one. `Provider.agent_id` is the only link.
+- **Deployment.** Unchanged: a `(provider, model)` binding Airo routes to. A
+  managed slot-Provider may have several candidate Deployments; at any instant
+  ≤1 is **resident** (loaded). Which one is resident is runtime state the agent
+  reports; *which one should be* is Airo's placement policy.
+
+## The slot model (static ports, swap, concurrency)
+
+- The agent is configured with a set of serving **ports** (its slots). Each slot
+  is registered as a durable Provider with `base_url = http://<host>:<port>/v1`.
+- **Load** = launch the engine on a slot's port with model M (+ launch profile).
+- **Swap** = load a different model into an occupied slot (implicit
+  unload-then-load on the same port).
+- **Concurrency** = number of slots. Two models served at once ⇒ two slots ⇒ two
+  ports ⇒ two engine processes. Nothing is dynamic; every `base_url` is stable.
+- **Placement** — *which model goes in which slot, and what to evict* — is
+  **Airo's policy**, decided from the agent's GPU telemetry + the set of
+  resident models. The agent only executes "load M into slot S" / "unload S".
+
+This is the heart of why Model 2 is coherent: a Provider is always a real,
+stable serving endpoint, because a slot is a declared port, not a per-load
+allocation.
 
 ## Control contract (Airo ↔ agent)
 
+**State flows by push (channel); control flows by request (HTTP).** Airo never
+polls the agent.
+
+**Registration** (on channel connect / reconnect): the agent announces itself
+and its slots; Airo upserts the **Agent** record and each slot **Provider**.
 ```
-GET  /health
-GET  /inventory          -> { models: [ModelRef] }   # provenance source for the shelf
-POST /inventory/refresh  -> rescan
-GET  /running            -> { instances: [InstanceInfo] }
-GET  /gpu                -> telemetry snapshot (VRAM budget input for Airo's policy)
-POST /load   {model, profile?}  -> InstanceInfo   # { base_url, revision, status, ... }
-POST /unload {model}            -> { ok: true }
+agent:  { host_id, control_url, version, gpu }
+slots:  [ { port, base_url, resident_model | null, status } , ... ]
 ```
+On reconnect the agent re-sends the full set so Airo's view self-heals
+(absent ⇒ down).
 
-`ModelRef` carries `revision` (HF snapshot sha), `quant`, `size`, `path`.
-`InstanceInfo` carries `base_url` + `revision` — Airo points its OpenAI client
-at `base_url` and stamps `revision` onto usage rows.
+**Push** (agent → Airo, channel): per-slot lifecycle/health transitions
+(`loading | up | down | swapped`, with the resident model id), coarse GPU
+telemetry, and presence (the connection itself = host up; disconnect ⇒ mark the
+host's managed providers down).
 
-To be published as an `open_api_spex` document (same dialect Airo already uses)
-so the contract is generated, not prose.
+**Control** (Airo → agent, HTTP on `control_url`):
+```
+GET  /inventory          -> local models with provenance (revision)
+GET  /slots              -> slots + resident model + status
+GET  /gpu                -> host telemetry
+POST /load   {model, slot}   -> load/swap model into a slot
+POST /unload {slot}          -> free a slot
+```
+The control API is the *management* surface only. It is never used for
+inference.
 
-## Provenance flow (the payoff)
+## Serving path
 
-1. `inventory` resolves `…/snapshots/<sha>/file.gguf` → `revision = <sha>` → fills Airo's `VERSION`/`REVISION`.
-2. Airo polls the HF API for the repo's current sha vs the deployed one → "update available".
-3. `load` returns the launched `revision`; Airo tags usage rows → `Version performance` becomes per-sha → regression detection.
+1. A request routes to a Deployment under a managed slot-Provider.
+2. Airo checks the slot's resident model. If it isn't the requested one (cold or
+   wrong model), Airo applies **placement policy** — pick/evict a slot — and
+   calls the agent (`POST /load {model, slot}`), waiting until the engine reports
+   ready.
+3. Airo serves with a **plain OpenAI call to `provider.base_url`** — the slot's
+   real static endpoint. No retarget, no indirection.
 
-None of this is possible on Ollama/LM Studio, because they never surface the
-revision or correlate per-version performance. That capability is what justifies
-building rather than adopting.
+The agent is **off this path entirely.** The "ensure the right model is loaded"
+step keys on `provider.agent_id` and lives in Airo's dispatch, not in a serving
+adapter.
 
-## Airo side (separate change, in `airo`)
+## Provenance (the payoff)
 
-A `local-gguf` provider driver — a *client* of this contract, alongside the
-existing Infinity/Ollama drivers. It:
+`inventory` resolves `…/snapshots/<sha>/file.gguf` → `revision = <sha>`. Airo
+fills the shelf's `REVISION`/`VERSION` from it, polls HF for newer shas
+("update available"), and attributes per-revision performance. This is the
+capability Ollama/LM Studio/Unsloth can't provide — and the reason to build
+rather than adopt.
 
-- pulls `inventory` → shelf + provenance;
-- on a routing decision, checks `running`, calls `load` if cold, applying **Airo's** evict policy under a VRAM budget (`/gpu`);
-- routes inference directly to `base_url`;
-- stamps `revision` onto usage; polls HF for newer revisions.
+## Supervision & crash isolation
+
+Each slot's engine is an external OS process owned by the agent via
+`MuonTrap.Daemon` (`restart: :temporary`). A native crash (CUDA OOM, segfault,
+MTP edge case) dies inside one supervised child, is reaped, and is reported as
+that slot going `down` — it never touches the agent VM, let alone Airo. This is
+exactly why the engine is an external process, **not** a NIF.
+
+## Engine-neutral seam
+
+`AiroAgent.Engine` is a behaviour; everything backend-specific is behind it
+(`inventory`, pure `launch_spec`, `default_profile`, `capabilities`). Adding
+vLLM later = one adapter module; the contract Airo speaks does not change. The
+launch `profile` (ctx, KV-quant, `--jinja`, reasoning flags, MTP `draft-mtp`,
+etc.) is an opaque per-engine blob Airo stores on the Deployment and passes
+through verbatim on load. Keeping a *bare* `llama-server` from our own build is a
+first-class reason for the seam: the MTP speedup survives.
+
+## Foreign / unmanaged engines
+
+A serving process the agent did **not** spawn (a hand-run vLLM) is a normal Airo
+Provider with `agent_id = null`. Airo routes to it directly via its wire adapter
+(`:vllm`/`:openai`); it has no lifecycle control and no health push (the prober
+covers it, as today). Managed and unmanaged providers coexist on the same host
+as peers. If you want Airo to control that vLLM's lifecycle, you don't wrap it —
+you let the **agent launch** a vLLM engine (via the engine seam), and it becomes
+a managed slot.
 
 ## Security
 
-The agent can spawn processes on the GPU host → treat as privileged. Default:
-**loopback-only** bind; widen to `0.0.0.0` *only* when `AIRO_AGENT_TOKEN` is set,
-and require it as a bearer token on every request. (Lesson from the Unsloth
-Cloudflare-tunnel default: never expose a serving-control surface unauthenticated.)
-
-## Fleet topology
-
-One agent per serving host — jobycorp (llama.cpp), sparky, the vLLM box — all
-speaking the same contract, with **Airo as the single cross-host brain/shelf**.
-Same provider pattern Airo already uses, but one where Airo owns the launch
-intent and therefore the provenance.
+The agent can spawn processes on the GPU host → privileged. Default: control API
+**loopback-only**; widen to the LAN only with an explicit advertise host, and
+require `AIRO_AGENT_TOKEN` as a bearer when set (also the channel join token).
+Engine ports serve on the trusted LAN; per-engine auth (reuse the token as
+`--api-key`) is a deferred sprint.
 
 ## Deploy
 
-Self-contained OTP release installed alongside the engine on each host, run as a
-systemd unit. Config via env (`AIRO_AGENT_PORT`, `AIRO_AGENT_TOKEN`,
-`AIRO_AGENT_MODEL_ROOT`, `LLAMA_SERVER_BIN`, `LLAMA_CPP_LIB`); see `runtime.exs`.
+One agent per serving host (not a per-engine sidecar — GPU telemetry, the
+artifact inventory, and VRAM coordination are host-level and want a single
+host-resident owner). Self-contained OTP release run as a systemd unit alongside
+the engines. Config via env (control port, advertise host, token, model root,
+engine binary/lib, serving-slot ports, Airo socket URL, host id).
 
-## Open questions / TODO
+## Airo-side shape (the consumer)
 
-- [ ] Publish the contract as `open_api_spex`.
-- [ ] Readiness: `/health` 200 means *server* up; gate on first successful `/v1/models` for *model* ready.
-- [ ] GGUF header parse for `family`/`ctx_max` (currently nil) — read metadata kv directly.
-- [ ] VRAM accounting on `load` (reject/evict before OOM) vs. leaving all policy to Airo.
-- [ ] Desired-state reconcile loop vs. the current imperative load/unload.
-- [ ] Streaming engine logs to Airo for the loading phase.
-- [ ] `MuonTrap` cgroup limits per instance?
+- **`Agent` entity + `/agents` LiveView** — registered hosts: control_url, GPU,
+  presence, the providers they manage.
+- **`Provider.agent_id`** (nullable) — the managed/unmanaged switch. Managed
+  providers carry the real static engine `base_url`; serving is plain
+  `OpenAICompatible`.
+- **`Airo.Agents` context** — talks to the agent `control_url` for
+  load/unload/swap/inventory/gpu, keyed on `agent_id`.
+- **Dispatch hook** — before serving a managed provider, ensure the right model
+  is resident (placement policy → agent load). Keyed on `agent_id`, in dispatch,
+  not in an adapter.
+- **Channel ingest** — registration → upsert Agent + slot-Providers; push →
+  per-slot health + resident model; disconnect → host's managed providers down.
+
+## Supersedes
+
+This replaces the earlier **agent-as-provider** design, where the agent itself
+was the Airo Provider (`base_url` = its control URL), engines were hidden on
+**dynamic** ports, and serving **retargeted** the provider's URL to a hidden
+engine. That fused two incompatible models (agent-as-provider vs.
+agent-as-manager) and made `provider.base_url` a control URL wearing a serving
+URL's field — which forced carve-outs (serving retarget, prober skip) and left a
+latent footgun (any generic consumer of `base_url` would hit the control port).
+Model 2 dissolves all of it: the agent's per-host engine supervision, inventory,
+telemetry, and channel push carry over largely intact; the airo side de-fuses
+into Agent + `agent_id` + plain OpenAI serving.
+
+## Open questions / out of scope
+
+- **Placement & eviction policy** (Airo): slot selection, VRAM fit, what to evict
+  — design TBD; the agent only executes the resulting load/unload.
+- **Slot count / port-pool config** ergonomics; whether slots are fully
+  pre-declared or drawn from a range and persisted.
+- **Swap semantics on a busy slot** — drain in-flight requests before unload?
+- Per-engine auth (token as `--api-key`); model pull/`POST /pull`; GGUF-header
+  parse for `ctx_max`/`family`; `open_api_spex` publication of the control
+  contract.

@@ -1,16 +1,16 @@
 defmodule AiroAgent.Api.Router do
   @moduledoc """
-  Control-plane HTTP contract Airo consumes. Verbs only — NO inference proxy.
-  Airo reads `/inventory` for the shelf, calls `/load`/`/unload` for lifecycle,
-  and routes inference *directly* to the `base_url` returned here.
+  Control-plane HTTP contract Airo consumes (Model 2). Verbs only — NO inference
+  proxy. Airo reads `/inventory` for the shelf, calls `/load`/`/unload` to place
+  models into **slots**, and routes inference *directly* to a slot's `base_url`.
 
       GET  /health
       GET  /inventory          -> { models: [ModelRef] }
-      GET  /running            -> { instances: [InstanceInfo] }
+      GET  /slots              -> { slots: [SlotInfo] }
       GET  /gpu                -> telemetry snapshot
       POST /inventory/refresh  -> rescan local catalog
-      POST /load   {model, profile?}  -> InstanceInfo
-      POST /unload {model}            -> { ok: true }
+      POST /load   {model, slot, profile?}  -> SlotInfo
+      POST /unload {slot}                   -> { ok: true }
   """
 
   use Plug.Router
@@ -33,25 +33,29 @@ defmodule AiroAgent.Api.Router do
     json(conn, 200, %{models: Enum.map(Inventory.refresh(), &model_json/1)})
   end
 
-  get "/running" do
-    json(conn, 200, %{instances: Enum.map(Fleet.running(), &Map.from_struct/1)})
+  get "/slots" do
+    json(conn, 200, %{slots: Enum.map(Fleet.slots(), &Map.from_struct/1)})
   end
 
   get("/gpu", do: json(conn, 200, GPU.snapshot()))
 
+  # Place a model into a slot (port). Airo owns placement (which slot, evict
+  # what); the agent loads/swaps and returns the slot's serving endpoint.
   post "/load" do
     case conn.body_params do
-      %{"model" => id} ->
+      %{"model" => id, "slot" => slot} when is_integer(slot) ->
         profile = conn.body_params |> Map.get("profile", %{}) |> atomize_profile()
 
-        # Inventory resolves the id → ModelRef (provenance); Fleet owns lifecycle.
         with {:ok, model} <- Inventory.get(id),
-             {:ok, info} <- Fleet.load(model, profile) do
+             {:ok, info} <- Fleet.load(model, slot, profile) do
           json(conn, 200, Map.from_struct(info))
         else
           {:error, :not_found} -> json(conn, 404, %{error: "unknown model", model: id})
           {:error, reason} -> json(conn, 422, %{error: inspect(reason)})
         end
+
+      %{"model" => _} ->
+        json(conn, 400, %{error: "missing or non-integer :slot"})
 
       _ ->
         json(conn, 400, %{error: "missing :model"})
@@ -60,14 +64,14 @@ defmodule AiroAgent.Api.Router do
 
   post "/unload" do
     case conn.body_params do
-      %{"model" => id} ->
-        case Fleet.unload(id) do
+      %{"slot" => slot} when is_integer(slot) ->
+        case Fleet.unload(slot) do
           :ok -> json(conn, 200, %{ok: true})
           {:error, reason} -> json(conn, 404, %{error: inspect(reason)})
         end
 
       _ ->
-        json(conn, 400, %{error: "missing :model"})
+        json(conn, 400, %{error: "missing or non-integer :slot"})
     end
   end
 
