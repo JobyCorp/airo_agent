@@ -20,8 +20,8 @@ defmodule AiroAgent.Notifier.Channel do
   alias AiroAgent.Fleet
   alias AiroAgent.Fleet.Event
 
-  def start_link(_opts) do
-    Slipstream.start_link(__MODULE__, config(), name: __MODULE__)
+  def start_link(opts \\ []) do
+    Slipstream.start_link(__MODULE__, config(opts), name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @impl AiroAgent.Notifier
@@ -141,11 +141,13 @@ defmodule AiroAgent.Notifier.Channel do
   defp topic, do: "agent:" <> host_id()
   defp host_id, do: Application.get_env(:airo_agent, :host_id, "unknown")
 
-  defp config do
+  defp config(opts) do
     [
-      uri: socket_uri(),
+      # opts[:uri] short-circuits socket_uri/0 so tests need no AIRO_SOCKET_URL.
+      uri: opts[:uri] || socket_uri(),
       reconnect_after_msec: [1_000, 2_000, 5_000, 10_000],
-      rejoin_after_msec: [1_000, 2_000, 5_000]
+      rejoin_after_msec: [1_000, 2_000, 5_000],
+      test_mode?: Keyword.get(opts, :test_mode?, false)
     ]
   end
 
