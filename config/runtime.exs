@@ -11,6 +11,18 @@ llama_bin =
 
 token = System.get_env("AIRO_AGENT_TOKEN")
 
+# Where Airo's /agent socket lives. Set it to push state over the channel
+# (decision #3); unset ⇒ the agent logs events locally (loopback dev).
+airo_socket_url = System.get_env("AIRO_SOCKET_URL")
+
+# Stable identity for this serving host; should match the Airo Provider name.
+host_id =
+  System.get_env("AIRO_AGENT_HOST_ID") ||
+    case :inet.gethostname() do
+      {:ok, name} -> List.to_string(name)
+      _ -> "unknown"
+    end
+
 # Exposure is EXPLICIT and decoupled from the token: set AIRO_AGENT_ADVERTISE_HOST
 # to the host's LAN IP to serve the fleet; leave it unset for loopback-only dev.
 # The token, when set, is OPTIONAL bearer auth layered on top — no longer the gate.
@@ -29,4 +41,9 @@ config :airo_agent,
   engine_bind_host: if(exposed?, do: "0.0.0.0", else: "127.0.0.1"),
   model_roots: [hf_cache],
   llama_cpp_lib_path: llama_lib,
-  engine_bin: %{llama_cpp: llama_bin}
+  engine_bin: %{llama_cpp: llama_bin},
+  # Channel push (decision #3): use the slipstream client when a socket URL is
+  # set, else just log lifecycle events locally.
+  host_id: host_id,
+  airo_socket_url: airo_socket_url,
+  notifier: if(airo_socket_url, do: AiroAgent.Notifier.Channel, else: AiroAgent.Notifier.Log)

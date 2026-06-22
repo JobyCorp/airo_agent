@@ -39,6 +39,9 @@ defmodule AiroAgent.MixProject do
       # Robust supervision of the external engine OS process: guarantees the
       # child dies with the BEAM and is reaped on crash (better than a raw Port).
       {:muontrap, "~> 1.5"},
+      # Phoenix Channels CLIENT: the agent connects to airo's /agent socket and
+      # pushes host state (decision #3). Airo is the server; we are the client.
+      {:slipstream, "~> 1.1"},
       {:telemetry, "~> 1.0"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"}
