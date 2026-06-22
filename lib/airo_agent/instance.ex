@@ -27,7 +27,14 @@ defmodule AiroAgent.Instance do
       schedule_readiness()
 
       {:ok,
-       %{model: model, port: port, daemon: daemon, readiness: launch.readiness, ready?: false}}
+       %{
+         model: model,
+         port: port,
+         adapter: adapter,
+         daemon: daemon,
+         readiness: launch.readiness,
+         ready?: false
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -40,7 +47,7 @@ defmodule AiroAgent.Instance do
         {:noreply, state}
 
       ready?(state) ->
-        Fleet.mark_up(self())
+        Fleet.mark_up(self(), runtime_props(state))
         {:noreply, %{state | ready?: true}}
 
       true ->
@@ -64,6 +71,11 @@ defmodule AiroAgent.Instance do
   end
 
   defp ready?(_), do: false
+
+  # Engine-reported runtime facts (ctx/parallel/build), if the adapter exposes them.
+  defp runtime_props(%{adapter: adapter, port: port}) do
+    if function_exported?(adapter, :runtime_props, 1), do: adapter.runtime_props(port), else: %{}
+  end
 
   defp bin_for(engine) do
     Application.get_env(:airo_agent, :engine_bin, %{})

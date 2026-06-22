@@ -50,7 +50,7 @@ defmodule AiroAgent.Notifier.ChannelTest do
 
     for slot <- slots do
       assert Map.keys(slot) |> Enum.sort() ==
-               ~w(base_url port resident_model revision started_at status)a
+               ~w(base_url ctx engine_build parallel port resident_model revision started_at status)a
     end
   end
 

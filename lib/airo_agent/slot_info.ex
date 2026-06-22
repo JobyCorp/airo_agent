@@ -17,9 +17,25 @@ defmodule AiroAgent.SlotInfo do
           status: status(),
           resident_model: String.t() | nil,
           revision: String.t() | nil,
+          # Runtime facts from the engine (when :up) — distinct from the model's
+          # ctx_max. `ctx` is the per-request context the engine is actually
+          # serving with; `parallel` is how many sequences share it.
+          ctx: pos_integer() | nil,
+          parallel: pos_integer() | nil,
+          engine_build: String.t() | nil,
           started_at: DateTime.t() | nil
         }
 
   @enforce_keys [:port, :base_url, :status]
-  defstruct [:port, :base_url, :status, :resident_model, :revision, :started_at]
+  defstruct [
+    :port,
+    :base_url,
+    :status,
+    :resident_model,
+    :revision,
+    :ctx,
+    :parallel,
+    :engine_build,
+    :started_at
+  ]
 end

@@ -33,8 +33,9 @@ defmodule AiroAgent.Fleet do
   def slots, do: GenServer.call(__MODULE__, :slots)
 
   @doc false
-  # Called by an Instance the first time its readiness predicate passes.
-  def mark_up(pid) when is_pid(pid), do: GenServer.cast(__MODULE__, {:mark_up, pid})
+  # Called by an Instance when readiness passes, with engine runtime props.
+  def mark_up(pid, props \\ %{}) when is_pid(pid),
+    do: GenServer.cast(__MODULE__, {:mark_up, pid, props})
 
   @impl true
   def init(:ok) do
@@ -91,10 +92,10 @@ defmodule AiroAgent.Fleet do
     do: {:reply, state.slots |> Map.values() |> Enum.map(&slot_info/1), state}
 
   @impl true
-  def handle_cast({:mark_up, pid}, state) do
+  def handle_cast({:mark_up, pid, props}, state) do
     case find_by_pid(state, pid) do
       {port, %{status: :loading} = slot} ->
-        slot = %{slot | status: :up}
+        slot = %{slot | status: :up, props: props}
         Logger.info("slot :#{port} up: #{model_id(slot)}")
         emit(slot, :up, nil)
         {:noreply, put_in(state.slots[port], slot)}
@@ -164,6 +165,7 @@ defmodule AiroAgent.Fleet do
            profile: profile,
            pid: pid,
            ref: ref,
+           props: %{},
            started_at: DateTime.utc_now()
          }}
 
@@ -180,11 +182,13 @@ defmodule AiroAgent.Fleet do
       profile: %{},
       pid: nil,
       ref: nil,
+      props: %{},
       started_at: nil
     }
 
   defp slot_info(slot) do
     host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
+    props = slot.props || %{}
 
     %SlotInfo{
       port: slot.port,
@@ -192,6 +196,9 @@ defmodule AiroAgent.Fleet do
       status: slot.status,
       resident_model: slot.model && slot.model.id,
       revision: slot.model && slot.model.revision,
+      ctx: props[:ctx],
+      parallel: props[:parallel],
+      engine_build: props[:engine_build],
       started_at: slot.started_at
     }
   end

@@ -90,6 +90,32 @@ defmodule AiroAgent.Engine.LlamaCpp do
       else: base
   end
 
+  @doc """
+  Best-effort runtime facts from a running engine's `/props` — the per-request
+  context (`ctx`), parallel sequences (`parallel`), and engine build. These are
+  what the engine is *actually* serving with, distinct from the model's ctx_max.
+  Never raises; returns `%{}` if the engine is unreachable.
+  """
+  def runtime_props(port) when is_integer(port) do
+    case Req.get("http://127.0.0.1:#{port}/props", retry: false, receive_timeout: 2_000) do
+      {:ok, %{status: 200, body: body}} when is_map(body) -> parse_props(body)
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  @doc false
+  def parse_props(body) when is_map(body) do
+    gen = Map.get(body, "default_generation_settings", %{})
+
+    %{
+      ctx: Map.get(gen, "n_ctx"),
+      parallel: Map.get(body, "total_slots"),
+      engine_build: Map.get(body, "build_info")
+    }
+  end
+
   # --- provenance extraction ---
 
   # HF cache layout: .../models--ORG--REPO/snapshots/<sha>/[VARIANT/]file.gguf
