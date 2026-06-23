@@ -30,7 +30,16 @@ defmodule AiroAgent.Api.Router do
   # PutApiSpec stashed on the conn.
   get("/openapi", do: OpenApiSpex.Plug.RenderSpec.call(conn, []))
 
-  @profile_keys ~w(ctx ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type parallel jinja chat_template reasoning_budget reasoning_format ld_library_path extra_argv)
+  # Accepted launch-profile keys (shared + per-engine). Anything else in a POST
+  # /load profile is dropped by atomize_profile/1. `ctx`/`parallel`/`extra_argv`
+  # are shared; the rest are engine-specific knobs the adapter understands.
+  @profile_keys ~w(
+    ctx parallel extra_argv
+    ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type jinja
+    chat_template reasoning_budget reasoning_format ld_library_path
+    tensor_parallel_size gpu_memory_utilization dtype quantization
+    kv_cache_dtype trust_remote_code
+  )
 
   get("/health", do: json(conn, 200, %{status: "ok"}))
 
