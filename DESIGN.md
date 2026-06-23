@@ -108,6 +108,63 @@ This is the heart of why Model 2 is coherent: a Provider is always a real,
 stable serving endpoint, because a slot is a declared port, not a per-load
 allocation.
 
+## Launch profile: context vs concurrency
+
+There are **two** concurrency axes, easily confused:
+
+1. **Across slots** — more slots ⇒ more models served at once (above).
+2. **Within a slot** — `llama-server --parallel N` serves N concurrent requests
+   from *one* engine.
+
+The trap is how they interact with context. `llama-server`'s `-c` is the
+**total** KV-cache budget, **split** across the `--parallel` sequences. So the
+context one request actually sees is `-c / parallel`. The agent reports that real
+per-request window as `SlotInfo.ctx` (read from the engine's `/props` `n_ctx`),
+which is correct — but it means a profile that sets a big `ctx` and leaves
+`parallel` at the agent default (`4`) silently yields a **quarter** of it per
+request (e.g. `ctx: 146432, parallel: 4` ⇒ ~36.6k/request). VRAM is sized by the
+total `-c`, *not* by `parallel`, so dropping `parallel` 4→1 widens each request
+to the full window at **no extra VRAM** — it trades in-slot concurrency for
+per-request length.
+
+Both `ctx` and `parallel` are first-class profile keys (already whitelisted and
+plumbed to `-c` / `--parallel`); Airo owns them per-Deployment. The defects are
+that the contract is implicit and the knob is invisible in the UI. Resolving it:
+
+**Contract decision (this repo, code) — what does profile `ctx` mean?**
+- **(A) `ctx` = per-request window (recommended).** The agent sets
+  `-c = ctx * (parallel || 1)`. "Set ctx, get ctx" holds regardless of
+  `parallel`; aligns with how every model card — and Airo's own
+  `Model.ctx_max` — uses "context". Cost: VRAM grows with `parallel`, so it must
+  be validated against GPU telemetry (issue **A3**).
+- **(B) `ctx` = total `-c` (llama-server-faithful) but default `parallel: 1`.**
+  No silent division; in-slot concurrency becomes explicit opt-in.
+- **(C) keep as-is** (total `-c`, default `parallel: 4`) and rely on the UI to
+  make the split legible (issue **A2**). Smallest change; keeps the footgun's
+  mechanics, only removes the surprise.
+
+**Agent tasks (this repo, faithful — no policy, do regardless of A/B/C):**
+- **A1.** Report the resolved profile (with agent defaults applied) on the slot,
+  so Airo/UI can see `parallel: 4` is in force rather than a blank — the default
+  must never be invisible.
+- **A2-data.** Add `ctx_total` (the `-c` actually passed) to `SlotInfo` beside
+  `ctx` (per-request) and `parallel`, so the UI shows the relationship without
+  inferring it.
+
+**Cross-repo issues (Airo — UI/config, owned by the Airo work, NOT this repo):**
+- **A2 (UI legibility).** Render per-request context *and* total KV + parallelism
+  together on the slot/deployment view (e.g. "36,608/req · ×4 parallel ·
+  146,432 total"). Consumes `ctx` / `ctx_total` / `parallel` from the slot.
+- **A3 (launch-profile WRITE path).** The Deployment config UI must let an
+  operator set `ctx`, `parallel`, and the other profile knobs. The read path
+  exists; without a write path these are settable only by hand-editing profile
+  JSON — which is *why* the agent default silently won here. **This is the fix
+  for the reported "set 142k, got 36k" symptom.**
+- **A4 (VRAM-fit validation).** Before load, validate requested `ctx`×`parallel`
+  against the Agent's GPU telemetry and warn/block on no-fit — load that won't
+  fit surfaces today only as the engine going `:failed`. Critical under contract
+  (A), where raising `parallel` raises VRAM. Part of placement/VRAM policy.
+
 ## Control contract (Airo ↔ agent)
 
 **State flows by push (channel); control flows by request (HTTP).** Airo never
