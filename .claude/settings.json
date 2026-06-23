@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mix joby_kit.lint *)",
+      "Bash(systemctl is-active *)",
+      "Bash(systemctl --user is-active *)",
+      "Bash(systemctl status *)",
+      "Bash(systemctl --user status *)",
+      "Bash(systemctl is-enabled *)",
+      "Bash(systemctl --user is-enabled *)",
+      "Bash(systemctl cat *)",
+      "Bash(systemctl --user cat *)",
+      "Bash(systemctl show *)",
+      "Bash(nvidia-smi)",
+      "Bash(nvidia-smi --query-gpu=*)",
+      "Bash(journalctl *)",
+      "Bash(ping *)",
+      "Bash(apt-cache *)"
+    ]
+  }
+}
