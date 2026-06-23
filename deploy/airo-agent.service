@@ -1,0 +1,46 @@
+# airo_agent — host-side model-serving control plane.
+# Install once per serving host: /etc/systemd/system/airo-agent.service
+# (bin/deploy.sh installs/updates it for you). Reload after edits:
+#   sudo systemctl daemon-reload && sudo systemctl restart airo-agent
+#
+# IMPORTANT: this unit owns the engines. Each llama-server is a muontrap child
+# of the BEAM, so stopping/restarting this unit REAPS every engine it spawned —
+# the host drops to zero resident models until Airo re-places them. That is why
+# bin/deploy.sh rolls one host at a time. A restart here is a host drain, not a
+# hot-swap.
+[Unit]
+Description=airo_agent — host-side model-serving control plane
+Documentation=https://github.com/jobycorp/airo_agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airo-agent
+Group=airo-agent
+# GPU access for nvidia-smi telemetry; adjust to your driver's device groups.
+SupplementaryGroups=video render
+
+# Per-host config (advertise host, slots, token, engine paths). 0640 root:airo-agent.
+EnvironmentFile=/etc/airo-agent.env
+
+# Standalone control plane: no clustering, so don't start epmd/distribution.
+Environment=RELEASE_DISTRIBUTION=none
+
+# Run the bundled release via the stable symlink; deploys flip it atomically.
+ExecStart=/opt/airo-agent/current/bin/airo_agent start
+
+# Restart the agent if IT crashes (this also restarts its engines — the
+# crash-recovery path; Airo re-places models once the agent is back).
+Restart=on-failure
+RestartSec=3
+
+# On stop, SIGTERM the BEAM then SIGKILL anything left in the cgroup — reaps
+# engine children that muontrap hasn't already cleaned up.
+KillMode=mixed
+TimeoutStopSec=30
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

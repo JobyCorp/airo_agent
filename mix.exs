@@ -12,7 +12,23 @@ defmodule AiroAgent.MixProject do
         "Host-side control surface for local model serving. Supervises an inference engine " <>
           "(llama.cpp now, vLLM/TGI later) and exposes inventory + lifecycle to Airo. " <>
           "Control plane only — never on the inference data path.",
-      deps: deps()
+      deps: deps(),
+      releases: releases()
+    ]
+  end
+
+  # Prod release: a self-contained tarball with bundled ERTS, so a serving host
+  # needs no Erlang/Elixir installed. Built inside a container matching the
+  # host's glibc (see bin/deploy.sh / DEPLOY.md); shipped over SSH and run as a
+  # systemd system unit alongside the engines.
+  defp releases do
+    [
+      airo_agent: [
+        include_executables_for: [:unix],
+        # Standalone control plane — no clustering, so skip distribution/epmd.
+        # (The systemd unit also sets RELEASE_DISTRIBUTION=none.)
+        applications: [runtime_tools: :permanent]
+      ]
     ]
   end
 

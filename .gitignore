@@ -22,3 +22,11 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 airo_agent-*.tar
 
+# Release tarballs produced by bin/deploy.sh.
+airo_agent-*.tar.gz
+
+# Per-host deploy env files carry AIRO_AGENT_TOKEN — never commit them.
+# Only the tracked template is kept.
+/deploy/hosts/*.env
+!/deploy/hosts/example.env
+
