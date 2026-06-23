@@ -36,9 +36,15 @@ Restart=on-failure
 RestartSec=3
 
 # On stop, SIGTERM the BEAM then SIGKILL anything left in the cgroup — reaps
-# engine children that muontrap hasn't already cleaned up.
+# native engine children (e.g. llama-server) that muontrap hasn't cleaned up.
 KillMode=mixed
 TimeoutStopSec=30
+
+# Container-based engines (vLLM) run in the RUNTIME's cgroup, not this unit's, so
+# KillMode can't reap them. Belt to the agent's own boot-time sweep: remove any
+# airo-slot-* containers on stop too. The leading '-' ignores failure (e.g. on a
+# llama-only host with no runtime installed).
+ExecStopPost=-/bin/sh -c 'rt="${AIRO_CONTAINER_RUNTIME:-podman}"; ids="$($rt ps -aq --filter name=airo-slot- 2>/dev/null)"; [ -n "$ids" ] && $rt rm -f $ids >/dev/null 2>&1 || true'
 
 LimitNOFILE=65536
 

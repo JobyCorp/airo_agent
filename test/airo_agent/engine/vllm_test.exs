@@ -70,6 +70,22 @@ defmodule AiroAgent.Engine.VllmTest do
     end
   end
 
+  describe "reap_orphans/0 (boot-time orphan sweep)" do
+    test "orphan_ids/1 splits a runtime's `ps -aq` output into ids" do
+      assert Vllm.orphan_ids("abc123\ndef456\n") == ["abc123", "def456"]
+      assert Vllm.orphan_ids("   \n") == []
+      assert Vllm.orphan_ids("") == []
+    end
+
+    test "is a no-op (:ok) when the container runtime isn't installed" do
+      prev = Application.get_env(:airo_agent, :container_runtime)
+      Application.put_env(:airo_agent, :container_runtime, "airo-no-such-runtime-xyz")
+      on_exit(fn -> Application.put_env(:airo_agent, :container_runtime, prev) end)
+
+      assert Vllm.reap_orphans() == :ok
+    end
+  end
+
   describe "inventory/1 — safetensors snapshots with provenance" do
     setup do
       root = Path.join(System.tmp_dir!(), "airo_vllm_#{System.unique_integer([:positive])}")

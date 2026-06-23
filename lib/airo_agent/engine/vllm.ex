@@ -26,6 +26,7 @@ defmodule AiroAgent.Engine.Vllm do
   @behaviour AiroAgent.Engine
 
   alias AiroAgent.{HFCache, ModelRef}
+  require Logger
 
   @impl true
   def inventory(opts) do
@@ -114,6 +115,33 @@ defmodule AiroAgent.Engine.Vllm do
     base = [:chat]
     if Map.has_key?(config, "vision_config"), do: [:vision | base], else: base
   end
+
+  @doc """
+  Remove any `airo-slot-*` containers left behind by a previous agent process —
+  e.g. after a hard crash (SIGKILL), where the container outlives the BEAM
+  because it runs in the runtime's cgroup, not the agent's. Best-effort and
+  idempotent; meant to run once at boot before anything loads, so a restart
+  always starts from a clean slate. No-ops if the runtime isn't installed.
+  """
+  @spec reap_orphans() :: :ok
+  def reap_orphans do
+    rt = Application.get_env(:airo_agent, :container_runtime, "podman")
+
+    with {out, 0} <-
+           System.cmd(rt, ["ps", "-aq", "--filter", "name=airo-slot-"], stderr_to_stdout: true),
+         [_ | _] = ids <- orphan_ids(out) do
+      System.cmd(rt, ["rm", "-f" | ids], stderr_to_stdout: true)
+      Logger.info("vllm: reaped #{length(ids)} orphan slot container(s) via #{rt}")
+    end
+
+    :ok
+  rescue
+    # runtime binary missing / unexpected output — nothing to reap, never fatal.
+    _ -> :ok
+  end
+
+  @doc false
+  def orphan_ids(ps_output), do: ps_output |> String.split() |> Enum.reject(&(&1 == ""))
 
   # --- provenance / config ---
 

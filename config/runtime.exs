@@ -22,6 +22,11 @@ vllm_slot_bin =
 
 vllm_image = System.get_env("VLLM_IMAGE")
 
+# Container runtime for container-based engines (vLLM). podman (default) | docker.
+# The vllm-slot wrapper reads the same env var; this exposes it to the agent for
+# the boot-time orphan sweep (see AiroAgent.Engine.Vllm.reap_orphans/0).
+container_runtime = System.get_env("AIRO_CONTAINER_RUNTIME") || "podman"
+
 token = System.get_env("AIRO_AGENT_TOKEN")
 
 # Where Airo's /agent socket lives. Set it to push state over the channel
@@ -114,6 +119,7 @@ config :airo_agent,
   engine_bin: %{llama_cpp: llama_bin, vllm: vllm_slot_bin},
   # Container image the vllm-slot wrapper runs (vLLM hosts only; nil otherwise).
   vllm_image: vllm_image,
+  container_runtime: container_runtime,
   # Engine adapters active on this host (per-host; see AIRO_AGENT_ENGINES above).
   engines: engines,
   # Channel push (decision #3): use the slipstream client when a socket URL is

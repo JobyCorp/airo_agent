@@ -5,6 +5,11 @@ defmodule AiroAgent.Application do
 
   @impl true
   def start(_type, _args) do
+    # Before anything can load: sweep container engines' orphan slots left by a
+    # prior crashed agent (they outlive the BEAM — they're in the runtime's
+    # cgroup, not ours). Gated so llama-only hosts never shell out to a runtime.
+    reap_orphan_containers()
+
     children =
       [
         # GPU telemetry (VRAM/util) — polled, read-only.
@@ -37,6 +42,15 @@ defmodule AiroAgent.Application do
       AiroAgent.Notifier.Channel -> [AiroAgent.Notifier.Supervisor]
       _ -> []
     end
+  end
+
+  # Only container-based engines leave orphan containers; today that's vLLM.
+  defp reap_orphan_containers do
+    if :vllm in Application.get_env(:airo_agent, :engines, []) do
+      AiroAgent.Engine.Vllm.reap_orphans()
+    end
+
+    :ok
   end
 
   defp api_port, do: Application.get_env(:airo_agent, :api_port, 4400)
