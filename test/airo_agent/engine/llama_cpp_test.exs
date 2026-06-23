@@ -46,6 +46,25 @@ defmodule AiroAgent.Engine.LlamaCppTest do
     end
   end
 
+  describe "inventory/1 — vision projectors are not models" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "airo_inv_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      File.touch!(Path.join(root, "model-Q4_K_M.gguf"))
+      File.touch!(Path.join(root, "mmproj-F16.gguf"))
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{root: root}
+    end
+
+    test "mmproj-*.gguf are excluded; real models are kept", %{root: root} do
+      {:ok, refs} = LlamaCpp.inventory(model_roots: [root])
+      paths = Enum.map(refs, & &1.path)
+
+      assert Enum.any?(paths, &String.ends_with?(&1, "model-Q4_K_M.gguf"))
+      refute Enum.any?(paths, &String.contains?(&1, "mmproj"))
+    end
+  end
+
   describe "resolve_profile/2" do
     test "merges the request over the model defaults so defaults are visible" do
       resolved = LlamaCpp.resolve_profile(model(), %{ctx: 4096})

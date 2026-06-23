@@ -20,6 +20,11 @@ defmodule AiroAgent.Engine.LlamaCpp do
       |> Enum.flat_map(&Path.wildcard(Path.join(&1, "**/*.gguf")))
       # split-shard models: keep only shard 00001 / unsharded files.
       |> Enum.reject(&shard_continuation?/1)
+      # mmproj-*.gguf are vision PROJECTORS — companions loaded WITH a base model
+      # via --mmproj, not standalone servable models. Listed, they inventory as
+      # bogus `family=clip` rows Airo would try to load. Their presence is already
+      # surfaced as the sibling model's :vision capability (see capabilities/1).
+      |> Enum.reject(&projector?/1)
       |> Enum.map(&ref_from_path/1)
 
     {:ok, refs}
@@ -192,6 +197,10 @@ defmodule AiroAgent.Engine.LlamaCpp do
 
   defp shard_continuation?(file),
     do: Regex.match?(~r/-0000[2-9]-of-\d+\.gguf$/, file)
+
+  # Multimodal vision projector (CLIP/SigLIP encoder), e.g. mmproj-F16.gguf — a
+  # companion to a base model, never served on its own.
+  defp projector?(file), do: String.starts_with?(Path.basename(file), "mmproj")
 
   defp file_size(path) do
     case File.stat(path) do
