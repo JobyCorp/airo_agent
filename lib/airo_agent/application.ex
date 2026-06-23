@@ -28,9 +28,13 @@ defmodule AiroAgent.Application do
 
   # Start the slipstream channel client only when it's the configured notifier
   # (i.e. AIRO_SOCKET_URL is set). Otherwise the Log notifier needs no process.
+  #
+  # Run it under its own supervisor (not as a bare sibling of Fleet/Instances) so
+  # a channel crash-loop is contained there and can never exhaust this
+  # supervisor's restart budget and take serving down with it.
   defp notifier_children do
     case Application.get_env(:airo_agent, :notifier) do
-      AiroAgent.Notifier.Channel -> [AiroAgent.Notifier.Channel]
+      AiroAgent.Notifier.Channel -> [AiroAgent.Notifier.Supervisor]
       _ -> []
     end
   end
