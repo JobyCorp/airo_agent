@@ -16,8 +16,13 @@ defmodule AiroAgent.Engine.Vllm do
       So here `ctx → --max-model-len` (NO ×parallel) and `parallel → --max-num-seqs`.
 
   Capabilities are conservative for now (`:chat`, plus `:vision` when the config
-  carries a `vision_config`); finer detection (embeddings) and the `runtime_props`
-  scrape land in Phase 2.
+  carries a `vision_config`); finer detection (embeddings) lands later.
+
+  `runtime_props/1` scrapes the resolved per-request context (`/v1/models`
+  `max_model_len`) and engine version (`/version`). `parallel`/`ctx_total` have no
+  runtime analogue — vLLM owns paged-KV batching internally (see the ctx contract
+  above), so they stay `nil`; the configured `--max-num-seqs` is still visible via
+  the slot's resolved `profile`.
 
   NB unified memory: on a DGX Spark `--gpu-memory-utilization` is a fraction of
   the *shared* ~120 GB pool, so it's left unset by default (vLLM's own default)
@@ -114,6 +119,44 @@ defmodule AiroAgent.Engine.Vllm do
   def capabilities_from_config(config) when is_map(config) do
     base = [:chat]
     if Map.has_key?(config, "vision_config"), do: [:vision | base], else: base
+  end
+
+  @doc """
+  Best-effort runtime facts from a running vLLM engine: the resolved per-request
+  context (`ctx`, from `/v1/models` `max_model_len`) and the engine build
+  (`/version`). vLLM owns batching internally, so `parallel`/`ctx_total` have no
+  runtime scrape (reported `nil`; the configured `--max-num-seqs` stays visible
+  via the slot's resolved `profile`). Each endpoint is fetched independently and
+  never raises; missing facts come back `nil`.
+  """
+  def runtime_props(port) when is_integer(port) do
+    base = "http://127.0.0.1:#{port}"
+
+    %{
+      ctx: base |> get_json("/v1/models") |> parse_models(),
+      parallel: nil,
+      ctx_total: nil,
+      engine_build: base |> get_json("/version") |> parse_version()
+    }
+  end
+
+  @doc false
+  def parse_models(%{"data" => [%{"max_model_len" => n} | _]}) when is_integer(n), do: n
+  def parse_models(_), do: nil
+
+  @doc false
+  def parse_version(%{"version" => v}) when is_binary(v), do: v
+  def parse_version(_), do: nil
+
+  # Best-effort GET → decoded map body; `%{}` on any non-200, error, or raise so
+  # one unreachable endpoint never sinks the other fact.
+  defp get_json(base, path) do
+    case Req.get(base <> path, retry: false, receive_timeout: 2_000) do
+      {:ok, %{status: 200, body: body}} when is_map(body) -> body
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
   end
 
   @doc """

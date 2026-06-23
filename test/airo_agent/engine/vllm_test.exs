@@ -70,6 +70,32 @@ defmodule AiroAgent.Engine.VllmTest do
     end
   end
 
+  describe "runtime_props parsing (/v1/models + /version)" do
+    test "parse_models/1 extracts the resolved max_model_len as ctx" do
+      # Shape of a real vLLM /v1/models response (trimmed).
+      body = %{
+        "object" => "list",
+        "data" => [%{"id" => "org/repo", "object" => "model", "max_model_len" => 32_768}]
+      }
+
+      assert Vllm.parse_models(body) == 32_768
+    end
+
+    test "parse_models/1 tolerates a missing/empty body" do
+      assert Vllm.parse_models(%{}) == nil
+      assert Vllm.parse_models(%{"data" => []}) == nil
+      assert Vllm.parse_models(%{"data" => [%{"id" => "x"}]}) == nil
+    end
+
+    test "parse_version/1 extracts the engine build" do
+      assert Vllm.parse_version(%{"version" => "0.6.3"}) == "0.6.3"
+    end
+
+    test "parse_version/1 tolerates a missing/empty body" do
+      assert Vllm.parse_version(%{}) == nil
+    end
+  end
+
   describe "reap_orphans/0 (boot-time orphan sweep)" do
     test "orphan_ids/1 splits a runtime's `ps -aq` output into ids" do
       assert Vllm.orphan_ids("abc123\ndef456\n") == ["abc123", "def456"]
