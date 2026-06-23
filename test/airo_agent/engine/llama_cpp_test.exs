@@ -27,12 +27,16 @@ defmodule AiroAgent.Engine.LlamaCppTest do
       assert arg_after(spec.argv, "--parallel") == "4"
     end
 
-    test "parallel defaults make a bare ctx the per-request window (÷ the default)" do
-      # No explicit parallel ⇒ default_profile's parallel: 4 applies, so a request
-      # for 36k per-request allocates -c = 36k × 4.
+    test "a bare ctx allocates exactly that -c (default parallel: 1, no surprise ×N)" do
+      # Default parallel is 1, so -c == ctx — no silent VRAM multiplication.
       {:ok, spec} = LlamaCpp.launch_spec(model(), %{ctx: 36_608}, 8081)
+      assert arg_after(spec.argv, "-c") == "36608"
+      assert arg_after(spec.argv, "--parallel") == "1"
+    end
+
+    test "explicit parallel multiplies -c (the opt-in VRAM cost)" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{ctx: 36_608, parallel: 4}, 8081)
       assert arg_after(spec.argv, "-c") == "146432"
-      assert arg_after(spec.argv, "--parallel") == "4"
     end
 
     test "parallel: 1 gives the whole window to one sequence" do
@@ -70,7 +74,7 @@ defmodule AiroAgent.Engine.LlamaCppTest do
       resolved = LlamaCpp.resolve_profile(model(), %{ctx: 4096})
       assert resolved.ctx == 4096
       # The agent default that would otherwise be invisible:
-      assert resolved.parallel == 4
+      assert resolved.parallel == 1
     end
 
     test "the request wins over a default" do

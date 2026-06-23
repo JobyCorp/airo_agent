@@ -76,7 +76,12 @@ defmodule AiroAgent.Engine.LlamaCpp do
       flash_attn: "on",
       cache_type_k: "q8_0",
       cache_type_v: "q8_0",
-      parallel: 4,
+      # Default 1, NOT 4: under contract A the engine's `-c` is `ctx × parallel`,
+      # so parallel MULTIPLIES VRAM (each sequence is another full `ctx` of KV).
+      # A default of 4 silently quadruples a bare `ctx` and OOM-crashes the engine
+      # on load. Concurrency is an explicit, VRAM-aware opt-in (Airo sets it per
+      # Deployment); the safe default gives one request exactly the `ctx` asked.
+      parallel: 1,
       # On by default: use the model's embedded chat template so tool calls parse
       # (unsloth Qwen GGUFs ship one). Airo can override per-profile with false.
       jinja: true,

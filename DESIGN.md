@@ -117,15 +117,21 @@ There are **two** concurrency axes, easily confused:
    from *one* engine.
 
 The trap is how they interact with context. `llama-server`'s `-c` is the
-**total** KV-cache budget, **split** across the `--parallel` sequences. So the
-context one request actually sees is `-c / parallel`. The agent reports that real
-per-request window as `SlotInfo.ctx` (read from the engine's `/props` `n_ctx`),
-which is correct — but it means a profile that sets a big `ctx` and leaves
-`parallel` at the agent default (`4`) silently yields a **quarter** of it per
-request (e.g. `ctx: 146432, parallel: 4` ⇒ ~36.6k/request). VRAM is sized by the
-total `-c`, *not* by `parallel`, so dropping `parallel` 4→1 widens each request
-to the full window at **no extra VRAM** — it trades in-slot concurrency for
-per-request length.
+**total** KV-cache budget, **split** across the `--parallel` sequences, so each
+request sees `-c / parallel`. Under contract A (below) the agent inverts this —
+it sets `-c = ctx × parallel` so each request gets the full `ctx` — which means
+**`parallel` multiplies VRAM**: every added sequence is another whole `ctx` of KV
+cache. The agent reports the real per-request window as `SlotInfo.ctx` (from the
+engine's `/props` `n_ctx`) and the total `-c` as `SlotInfo.ctx_total`.
+
+Because of that multiplication, the safe default is **`parallel: 1`** — a bare
+`ctx` allocates exactly `-c = ctx`, no surprise. (A previous default of `4`
+quadrupled a bare `ctx` into 4× the KV cache; a `ctx: 146432` that fit fine at
+`parallel: 1` OOM-crashed the engine at `-c = 585728` when loaded with the
+default still at 4. llama-server **segfaults** rather than erroring on a KV
+cudaMalloc failure, especially with `-ngl 999` blocking its auto-fit — so an
+over-large `ctx × parallel` is not a soft failure.) Concurrency is an explicit,
+VRAM-aware opt-in.
 
 Both `ctx` and `parallel` are first-class profile keys (already whitelisted and
 plumbed to `-c` / `--parallel`); Airo owns them per-Deployment. The defects were
@@ -143,7 +149,7 @@ going `:failed`. (Rejected: **B** = `ctx` as total `-c` with default
 **Agent tasks (this repo) — DONE (`LlamaCpp`, `Fleet`, `SlotInfo`, channel):**
 - **A1.** The slot now reports its **resolved profile** (defaults applied) via the
   optional `Engine.resolve_profile/2` callback → `SlotInfo.profile`, so the
-  agent's defaults (e.g. `parallel: 4`) are never an invisible blank.
+  agent's defaults (e.g. `parallel: 1`) are never an invisible blank.
 - **A2-data.** `SlotInfo`/slot events now carry **`ctx_total`** (the `-c`
   allocated = `ctx × parallel`, derived from `/props` since llama-server exposes
   no total field) beside `ctx` (per-request) and `parallel`.
@@ -158,9 +164,14 @@ going `:failed`. (Rejected: **B** = `ctx` as total `-c` with default
   JSON — which is *why* the agent default silently won here. **This is the fix
   for the reported "set 142k, got 36k" symptom.**
 - **A4 (VRAM-fit validation).** Before load, validate requested `ctx`×`parallel`
-  against the Agent's GPU telemetry and warn/block on no-fit — load that won't
-  fit surfaces today only as the engine going `:failed`. Critical under contract
-  (A), where raising `parallel` raises VRAM. Part of placement/VRAM policy.
+  against the Agent's GPU telemetry and warn/block on no-fit. An over-large total
+  does **not** fail softly: llama-server **segfaults** on the KV cudaMalloc
+  failure (observed 2026-06-22 — a `ctx: 146432, parallel: 4` ⇒ `-c 585728` OOM),
+  reported by the agent as the slot going `:failed`. Default `parallel: 1`
+  removes the common footgun, but a too-large `ctx` (or explicit `parallel`) can
+  still overcommit — only a real VRAM check closes it. Part of placement/VRAM
+  policy. (An agent-side pre-flight VRAM guard is a possible defense-in-depth,
+  but estimating KV size needs more GGUF metadata and overlaps this policy.)
 
 ## Control contract (Airo ↔ agent)
 
