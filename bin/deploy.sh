@@ -176,7 +176,12 @@ RUN_USER="$5"; KEEP="$6"; HEALTH_TIMEOUT="$7"; PORT="$8"; SKIP_ENV="$9"
 if ! id "${RUN_USER}" >/dev/null 2>&1; then
   echo "  • creating system user ${RUN_USER}"
   sudo useradd --system --create-home --shell /usr/sbin/nologin "${RUN_USER}"
-  sudo usermod -aG video,render "${RUN_USER}" 2>/dev/null || true
+fi
+# Group memberships (idempotent, re-applied each deploy): GPU device groups, plus
+# docker where present so a vLLM host's wrapper can drive the container runtime.
+sudo usermod -aG video,render "${RUN_USER}" 2>/dev/null || true
+if getent group docker >/dev/null 2>&1; then
+  sudo usermod -aG docker "${RUN_USER}" 2>/dev/null || true
 fi
 sudo install -d -o "${RUN_USER}" -g "${RUN_USER}" -m 0755 "${DIR}" "${DIR}/releases"
 

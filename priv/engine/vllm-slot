@@ -1,23 +1,46 @@
 #!/usr/bin/env bash
 # vLLM slot launcher — the ":vllm" engine "binary" airo_agent spawns via muontrap.
-# It wraps podman around `vllm serve …`: the agent passes the vLLM args
-# (serve <snapshot-dir> --port P …) and this adds the container boilerplate.
+# It wraps a container runtime around `vllm serve …`: the agent passes the vLLM
+# args (serve <snapshot-dir> --port P …) and this adds the container boilerplate.
 #
-# Why podman (not docker): daemonless, so the container is a child of THIS
-# process — muontrap reaping us reaps the container, preserving the "engine dies
-# with the BEAM" invariant. The container is named airo-slot-<port> and force-
-# removed first, so load/swap is idempotent even if a prior one was orphaned.
+# Runtime: podman by default (daemonless → container is a child of THIS process,
+# so muontrap reaping us reaps it). Set AIRO_CONTAINER_RUNTIME=docker on hosts
+# where docker is the established path (e.g. a DGX Spark that already runs the
+# NGC vLLM image): graceful stop still tears the container down (docker run
+# forwards SIGTERM), and the named-container reconcile below covers a hard crash.
+#
+# The container is named airo-slot-<port> and force-removed first, so load/swap
+# is idempotent even if a prior one was orphaned.
 #
 # Env (forwarded by the adapter's launch_spec, or from /etc/airo-agent.env):
-#   VLLM_IMAGE              required — a vLLM OpenAI-server image (arm64 on Spark)
-#   AIRO_AGENT_MODEL_ROOT   HF cache to mount read-only (holds the snapshot dir)
+#   VLLM_IMAGE               required — a vLLM OpenAI-server image (arm64 on Spark)
+#   AIRO_AGENT_MODEL_ROOT    HF cache to mount read-only (holds the snapshot dir)
+#   AIRO_CONTAINER_RUNTIME   podman (default) | docker
+#   AIRO_GPU_ARGS            override GPU flags (default: --gpus all for docker,
+#                            --device nvidia.com/gpu=all for podman/CDI)
+#   AIRO_VLLM_CMD_PREFIX     in-container command before the args (default: vllm —
+#                            the NGC image's nvidia_entrypoint.sh execs `vllm serve …`)
+#   AIRO_VLLM_RUN_ARGS       extra runtime args (default: --ipc=host + raised
+#                            memlock/stack ulimits — vLLM needs host shared memory;
+#                            the proven sparky container runs with --ipc=host)
 #
-# Phase 1: a working first cut. Phase 2 hardens it (SIGTERM→podman stop trap
-# instead of exec, CDI GPU passthrough validated on GB10, crash reconcile).
+# Phase 1 first cut. Phase 2 hardens (SIGTERM→stop trap instead of exec, CDI
+# validation on GB10, crash reconcile, runtime_props scrape).
 set -euo pipefail
 
 : "${VLLM_IMAGE:?set VLLM_IMAGE to a vLLM OpenAI-server image}"
 MODEL_ROOT="${AIRO_AGENT_MODEL_ROOT:-$HOME/.cache/huggingface/hub}"
+RT="${AIRO_CONTAINER_RUNTIME:-podman}"
+CMD_PREFIX="${AIRO_VLLM_CMD_PREFIX:-vllm}"
+
+# GPU passthrough differs by runtime; both go through nvidia-container-toolkit.
+if [ -n "${AIRO_GPU_ARGS:-}" ]; then
+  read -r -a gpu_args <<<"$AIRO_GPU_ARGS"
+elif [ "$RT" = "docker" ]; then
+  gpu_args=(--gpus all)
+else
+  gpu_args=(--device nvidia.com/gpu=all)
+fi
 
 # Pull the slot port out of the vLLM args (for the container name + -p mapping).
 port=""
@@ -27,16 +50,22 @@ for a in "$@"; do
   prev="$a"
 done
 name="airo-slot-${port:-vllm}"
+port_args=()
+[ -n "$port" ] && port_args=(-p "${port}:${port}")
+
+# vLLM needs host IPC (shared memory) + raised locked-memory/stack ulimits.
+read -r -a vllm_run_args <<<"${AIRO_VLLM_RUN_ARGS:---ipc=host --ulimit memlock=-1 --ulimit stack=67108864}"
 
 # Idempotent: clear any stale container holding this slot before (re)launching.
-podman rm -f "$name" >/dev/null 2>&1 || true
+"$RT" rm -f "$name" >/dev/null 2>&1 || true
 
-# --entrypoint vllm makes the image-entrypoint irrelevant: "$@" starts with
-# `serve …`. Replace this process with podman so muontrap supervises it directly.
-exec podman run --rm --name "$name" \
-  --device nvidia.com/gpu=all \
+# Replace this process with the runtime so muontrap supervises it directly. The
+# image entrypoint (e.g. NGC's nvidia_entrypoint.sh) execs `${CMD_PREFIX} "$@"`,
+# i.e. `vllm serve <dir> …`.
+exec "$RT" run --rm --name "$name" \
+  "${gpu_args[@]}" \
+  "${vllm_run_args[@]}" \
   -e HF_HUB_OFFLINE=1 \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
-  -p "${port}:${port}" \
-  --entrypoint vllm \
-  "$VLLM_IMAGE" "$@"
+  "${port_args[@]}" \
+  "$VLLM_IMAGE" $CMD_PREFIX "$@"
