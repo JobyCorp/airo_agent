@@ -12,14 +12,14 @@ defmodule AiroAgent.Test.FakeInstance do
 
   def start_link(spec), do: GenServer.start_link(__MODULE__, spec)
 
-  def become_ready(pid), do: send(pid, :become_ready)
+  def become_ready(pid, props \\ %{}), do: send(pid, {:become_ready, props})
 
   @impl true
   def init(%{model: _model, profile: _profile, port: _port}), do: {:ok, %{}}
 
   @impl true
-  def handle_info(:become_ready, state) do
-    AiroAgent.Fleet.mark_up(self())
+  def handle_info({:become_ready, props}, state) do
+    AiroAgent.Fleet.mark_up(self(), props)
     {:noreply, state}
   end
 end

@@ -19,10 +19,15 @@ defmodule AiroAgent.SlotInfo do
           revision: String.t() | nil,
           # Runtime facts from the engine (when :up) — distinct from the model's
           # ctx_max. `ctx` is the per-request context the engine is actually
-          # serving with; `parallel` is how many sequences share it.
+          # serving with; `parallel` is how many sequences share it; `ctx_total`
+          # is the total KV budget (`-c` = ctx × parallel) the engine allocated.
           ctx: pos_integer() | nil,
           parallel: pos_integer() | nil,
+          ctx_total: pos_integer() | nil,
           engine_build: String.t() | nil,
+          # The effective launch profile (defaults applied) the slot is running —
+          # so the agent's defaults (e.g. parallel: 4) are never invisible.
+          profile: map(),
           started_at: DateTime.t() | nil
         }
 
@@ -35,7 +40,9 @@ defmodule AiroAgent.SlotInfo do
     :revision,
     :ctx,
     :parallel,
+    :ctx_total,
     :engine_build,
-    :started_at
+    :started_at,
+    profile: %{}
   ]
 end

@@ -119,6 +119,7 @@ defmodule AiroAgent.Notifier.Channel do
       revision: e.revision,
       ctx: e.ctx,
       parallel: e.parallel,
+      ctx_total: e.ctx_total,
       engine_build: e.engine_build,
       status: e.type,
       reason: serialize_reason(e.reason),

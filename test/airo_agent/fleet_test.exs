@@ -60,6 +60,29 @@ defmodule AiroAgent.FleetTest do
            )
   end
 
+  test "engine props (ctx_total) and the resolved profile surface on the :up slot" do
+    {:ok, _} = Fleet.load(model("m2b"), @slot, %{ctx: 36_608})
+    assert_receive {:event, %Event{type: :loading}}
+
+    # Simulate what the Instance reports up on readiness: engine /props facts plus
+    # the effective launch profile (defaults applied).
+    FakeInstance.become_ready(child_pid(), %{
+      ctx: 36_608,
+      parallel: 4,
+      ctx_total: 146_432,
+      engine_build: "b1-test",
+      resolved_profile: %{ctx: 36_608, parallel: 4, flash_attn: "on"}
+    })
+
+    assert_receive {:event, %Event{type: :up, ctx: 36_608, parallel: 4, ctx_total: 146_432}}
+
+    slot = Enum.find(Fleet.slots(), &(&1.port == @slot))
+    assert slot.ctx == 36_608
+    assert slot.ctx_total == 146_432
+    # The agent default (parallel: 4) is visible, not a blank.
+    assert slot.profile == %{ctx: 36_608, parallel: 4, flash_attn: "on"}
+  end
+
   test "an unexpected exit marks the slot :down with the reason" do
     {:ok, _} = Fleet.load(model("m3"), @slot)
     FakeInstance.become_ready(child_pid())

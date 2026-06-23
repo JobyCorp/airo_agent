@@ -35,8 +35,18 @@ defmodule AiroAgent.Engine do
   @doc "Sane default launch profile for a model (e.g. flash-attn on, q8_0 KV, MTP when present)."
   @callback default_profile(ModelRef.t()) :: profile()
 
+  @doc """
+  Merge `profile` over the model's defaults → the **effective** launch profile the
+  engine will run with (pure, no side effects). Optional; reported on the slot so
+  Airo/UI sees the defaults actually in force (e.g. `parallel: 4`) rather than a
+  blank. Defaults to the requested profile when an engine doesn't implement it.
+  """
+  @callback resolve_profile(ModelRef.t(), profile()) :: profile()
+
   @doc "Capabilities this engine can serve for `model` (e.g. [:chat, :embeddings, :vision])."
   @callback capabilities(ModelRef.t()) :: [atom()]
+
+  @optional_callbacks resolve_profile: 2
 
   # --- Dispatch helpers: resolve the configured/per-model engine adapter. ---
 

@@ -31,6 +31,7 @@ defmodule AiroAgent.Instance do
          model: model,
          port: port,
          adapter: adapter,
+         resolved_profile: resolved_profile(adapter, model, profile),
          daemon: daemon,
          readiness: launch.readiness,
          ready?: false
@@ -47,7 +48,8 @@ defmodule AiroAgent.Instance do
         {:noreply, state}
 
       ready?(state) ->
-        Fleet.mark_up(self(), runtime_props(state))
+        props = Map.put(runtime_props(state), :resolved_profile, state.resolved_profile)
+        Fleet.mark_up(self(), props)
         {:noreply, %{state | ready?: true}}
 
       true ->
@@ -75,6 +77,13 @@ defmodule AiroAgent.Instance do
   # Engine-reported runtime facts (ctx/parallel/build), if the adapter exposes them.
   defp runtime_props(%{adapter: adapter, port: port}) do
     if function_exported?(adapter, :runtime_props, 1), do: adapter.runtime_props(port), else: %{}
+  end
+
+  # Effective launch profile (defaults applied), if the adapter exposes it.
+  defp resolved_profile(adapter, model, profile) do
+    if function_exported?(adapter, :resolve_profile, 2),
+      do: adapter.resolve_profile(model, profile),
+      else: profile
   end
 
   defp bin_for(engine) do

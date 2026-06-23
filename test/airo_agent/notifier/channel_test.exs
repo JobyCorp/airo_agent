@@ -50,7 +50,7 @@ defmodule AiroAgent.Notifier.ChannelTest do
 
     for slot <- slots do
       assert Map.keys(slot) |> Enum.sort() ==
-               ~w(base_url ctx engine_build parallel port resident_model revision started_at status)a
+               ~w(base_url ctx ctx_total engine_build parallel port profile resident_model revision started_at status)a
     end
   end
 
@@ -63,8 +63,9 @@ defmodule AiroAgent.Notifier.ChannelTest do
       port: 8081,
       resident_model: "org/repo:Q4",
       revision: "abc123",
-      ctx: 65_536,
+      ctx: 36_608,
       parallel: 4,
+      ctx_total: 146_432,
       engine_build: "b1-9633186",
       reason: nil,
       at: ~U[2026-06-22 00:00:00Z]
@@ -76,8 +77,9 @@ defmodule AiroAgent.Notifier.ChannelTest do
              port: 8081,
              resident_model: "org/repo:Q4",
              revision: "abc123",
-             ctx: 65_536,
+             ctx: 36_608,
              parallel: 4,
+             ctx_total: 146_432,
              engine_build: "b1-9633186",
              status: :up,
              reason: nil,

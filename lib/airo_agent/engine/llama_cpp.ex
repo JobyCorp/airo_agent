@@ -29,13 +29,13 @@ defmodule AiroAgent.Engine.LlamaCpp do
 
   @impl true
   def launch_spec(%ModelRef{path: path} = model, profile, port) do
-    profile = Map.merge(default_profile(model), profile)
+    profile = resolve_profile(model, profile)
     host = Application.get_env(:airo_agent, :engine_bind_host, "127.0.0.1")
 
     # Tool-use + thinking knobs (launch-time identity; restart-on-change):
     argv =
       ["-m", path, "--host", host, "--port", Integer.to_string(port)] ++
-        flag("-c", profile[:ctx]) ++
+        flag("-c", total_ctx(profile)) ++
         flag("-ngl", profile[:ngl]) ++
         flag("-ncmoe", profile[:n_cpu_moe]) ++
         flag("--flash-attn", profile[:flash_attn]) ++
@@ -82,6 +82,10 @@ defmodule AiroAgent.Engine.LlamaCpp do
   end
 
   @impl true
+  def resolve_profile(%ModelRef{} = model, profile),
+    do: Map.merge(default_profile(model), profile)
+
+  @impl true
   def capabilities(%ModelRef{path: path}) do
     base = [:chat]
 
@@ -108,13 +112,24 @@ defmodule AiroAgent.Engine.LlamaCpp do
   @doc false
   def parse_props(body) when is_map(body) do
     gen = Map.get(body, "default_generation_settings", %{})
+    ctx = Map.get(gen, "n_ctx")
+    parallel = Map.get(body, "total_slots")
 
     %{
-      ctx: Map.get(gen, "n_ctx"),
-      parallel: Map.get(body, "total_slots"),
+      # Per-request window the engine is actually serving with.
+      ctx: ctx,
+      parallel: parallel,
+      # Total KV budget allocated (`-c`) = per-request × parallel. /props has no
+      # field for it, so derive it; distinct from the model's ctx_max.
+      ctx_total: ctx_total(ctx, parallel),
       engine_build: Map.get(body, "build_info")
     }
   end
+
+  defp ctx_total(ctx, parallel) when is_integer(ctx) and is_integer(parallel),
+    do: ctx * parallel
+
+  defp ctx_total(_, _), do: nil
 
   # --- provenance extraction ---
 
@@ -190,6 +205,15 @@ defmodule AiroAgent.Engine.LlamaCpp do
       Path.expand("~/.cache/huggingface/hub")
     ])
   end
+
+  # Contract A: profile `ctx` is the PER-REQUEST window. llama-server's `-c` is
+  # the TOTAL KV budget it splits across `--parallel` sequences, so to give each
+  # request the full `ctx` we request `ctx × parallel`. nil `ctx` ⇒ omit `-c`
+  # (let llama-server default). VRAM scales with the total, i.e. with parallel.
+  defp total_ctx(%{ctx: ctx} = profile) when is_integer(ctx),
+    do: ctx * (Map.get(profile, :parallel) || 1)
+
+  defp total_ctx(_), do: nil
 
   defp flag(_k, nil), do: []
   defp flag(k, v), do: [k, to_string(v)]

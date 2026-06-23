@@ -128,28 +128,25 @@ to the full window at **no extra VRAM** — it trades in-slot concurrency for
 per-request length.
 
 Both `ctx` and `parallel` are first-class profile keys (already whitelisted and
-plumbed to `-c` / `--parallel`); Airo owns them per-Deployment. The defects are
-that the contract is implicit and the knob is invisible in the UI. Resolving it:
+plumbed to `-c` / `--parallel`); Airo owns them per-Deployment. The defects were
+that the contract was implicit and the knob is invisible in the UI.
 
-**Contract decision (this repo, code) — what does profile `ctx` mean?**
-- **(A) `ctx` = per-request window (recommended).** The agent sets
-  `-c = ctx * (parallel || 1)`. "Set ctx, get ctx" holds regardless of
-  `parallel`; aligns with how every model card — and Airo's own
-  `Model.ctx_max` — uses "context". Cost: VRAM grows with `parallel`, so it must
-  be validated against GPU telemetry (issue **A3**).
-- **(B) `ctx` = total `-c` (llama-server-faithful) but default `parallel: 1`.**
-  No silent division; in-slot concurrency becomes explicit opt-in.
-- **(C) keep as-is** (total `-c`, default `parallel: 4`) and rely on the UI to
-  make the split legible (issue **A2**). Smallest change; keeps the footgun's
-  mechanics, only removes the surprise.
+**Contract — DECIDED: (A) `ctx` is the per-request window.** The agent sets
+`-c = ctx * (parallel || 1)`, so "set ctx, get ctx" holds regardless of
+`parallel` — aligning with how every model card, and Airo's own `Model.ctx_max`,
+use "context". Consequence: VRAM grows with `parallel` (each added sequence is
+another full `ctx` of KV), so an over-large `ctx × parallel` must be validated
+against GPU telemetry (issue **A4**); unvalidated, it surfaces as the engine
+going `:failed`. (Rejected: **B** = `ctx` as total `-c` with default
+`parallel: 1`; **C** = keep total `-c` and fix only the UI.)
 
-**Agent tasks (this repo, faithful — no policy, do regardless of A/B/C):**
-- **A1.** Report the resolved profile (with agent defaults applied) on the slot,
-  so Airo/UI can see `parallel: 4` is in force rather than a blank — the default
-  must never be invisible.
-- **A2-data.** Add `ctx_total` (the `-c` actually passed) to `SlotInfo` beside
-  `ctx` (per-request) and `parallel`, so the UI shows the relationship without
-  inferring it.
+**Agent tasks (this repo) — DONE (`LlamaCpp`, `Fleet`, `SlotInfo`, channel):**
+- **A1.** The slot now reports its **resolved profile** (defaults applied) via the
+  optional `Engine.resolve_profile/2` callback → `SlotInfo.profile`, so the
+  agent's defaults (e.g. `parallel: 4`) are never an invisible blank.
+- **A2-data.** `SlotInfo`/slot events now carry **`ctx_total`** (the `-c`
+  allocated = `ctx × parallel`, derived from `/props` since llama-server exposes
+  no total field) beside `ctx` (per-request) and `parallel`.
 
 **Cross-repo issues (Airo — UI/config, owned by the Airo work, NOT this repo):**
 - **A2 (UI legibility).** Render per-request context *and* total KV + parallelism

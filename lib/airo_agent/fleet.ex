@@ -202,7 +202,11 @@ defmodule AiroAgent.Fleet do
       revision: slot.model && slot.model.revision,
       ctx: props[:ctx],
       parallel: props[:parallel],
+      ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
+      # Effective profile once :up; fall back to the requested profile while
+      # :loading (before the engine reports its resolved config).
+      profile: props[:resolved_profile] || slot.profile,
       started_at: slot.started_at
     }
   end
@@ -217,6 +221,7 @@ defmodule AiroAgent.Fleet do
       revision: slot.model && slot.model.revision,
       ctx: props[:ctx],
       parallel: props[:parallel],
+      ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
       reason: reason,
       at: DateTime.utc_now()

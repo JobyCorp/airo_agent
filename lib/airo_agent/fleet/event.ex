@@ -20,6 +20,7 @@ defmodule AiroAgent.Fleet.Event do
           revision: String.t() | nil,
           ctx: pos_integer() | nil,
           parallel: pos_integer() | nil,
+          ctx_total: pos_integer() | nil,
           engine_build: String.t() | nil,
           reason: term() | nil,
           at: DateTime.t()
@@ -33,6 +34,7 @@ defmodule AiroAgent.Fleet.Event do
     :revision,
     :ctx,
     :parallel,
+    :ctx_total,
     :engine_build,
     :reason,
     :at
