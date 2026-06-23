@@ -63,7 +63,7 @@ else
     HOSTS+=("$stem")
   done
 fi
-[ "${#HOSTS[@]}" -gt 0 ] || { echo "error: no hosts (pass aliases or add deploy/hosts/<alias>.env)" >&2; exit 1; }
+[ "${#HOSTS[@]}" -gt 0 ] || [ "${BUILD_ONLY:-0}" = "1" ] || { echo "error: no hosts (pass aliases or add deploy/hosts/<alias>.env)" >&2; exit 1; }
 
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
 # date is host-side (not in the release), so a stamp here is fine.
@@ -129,6 +129,17 @@ build_for() {
   [ -f "${OUT_DIR}/${tarball}" ] || { echo "error: ${arch} build produced no ${tarball}" >&2; return 1; }
   echo "${tarball}"
 }
+
+# ── Build-only (shake-out): build a tarball, copy it out, stop ───────────────
+# `BUILD_ONLY=1 PLATFORM=linux/arm64 bin/deploy.sh` — validate the (emulated)
+# build path without touching any host. The tarball lands in the project root.
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+  platform="${PLATFORM:-linux/$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')}"
+  tb="$(build_for "${platform}")" || exit 1
+  cp "${OUT_DIR}/${tb}" "./${tb}"
+  echo "✓ built ${tb} (${platform}) → ./${tb}"
+  exit 0
+fi
 
 # ── Roll out, one host at a time (build its arch on demand) ───────────────────
 for host in "${HOSTS[@]}"; do
