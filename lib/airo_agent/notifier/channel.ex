@@ -64,7 +64,14 @@ defmodule AiroAgent.Notifier.Channel do
 
   @impl Slipstream
   def handle_disconnect(_reason, socket) do
-    {:ok, reconnect(socket)}
+    # reconnect/1 returns {:ok, socket} | {:error, _} (NOT a bare socket), so
+    # {:ok, reconnect(...)} double-wraps and crashes the callback dispatch — which
+    # is exactly what took the agent down when Airo went away. Return it directly;
+    # on error just hold the socket. Airo being down must never crash the agent.
+    case reconnect(socket) do
+      {:ok, socket} -> {:ok, socket}
+      {:error, _reason} -> {:ok, socket}
+    end
   end
 
   @impl Slipstream

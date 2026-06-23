@@ -104,4 +104,15 @@ defmodule AiroAgent.Notifier.ChannelTest do
 
     assert_push(@topic, "register", %{agent: _, slots: _})
   end
+
+  test "a disconnect (Airo down) does not crash the client", %{client: client} do
+    connect_and_assert_join(client, @topic, _params, :ok)
+    assert_push(@topic, "register", _)
+
+    ref = Process.monitor(client)
+    disconnect(client, :closed)
+
+    refute_receive {:DOWN, ^ref, :process, _, _}, 300
+    assert Process.alive?(client)
+  end
 end
