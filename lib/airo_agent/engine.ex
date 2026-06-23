@@ -13,6 +13,7 @@ defmodule AiroAgent.Engine do
   """
 
   alias AiroAgent.ModelRef
+  require Logger
 
   @typedoc "Opaque, engine-specific launch knobs. Airo stores this per model and passes it through verbatim."
   @type profile :: map()
@@ -55,11 +56,26 @@ defmodule AiroAgent.Engine do
   @spec adapter(atom()) :: module()
   def adapter(engine), do: Map.fetch!(@adapters, engine)
 
+  @doc "Whether an engine has a registered adapter (i.e. `adapter/1` won't raise)."
+  @spec known?(atom()) :: boolean()
+  def known?(engine), do: Map.has_key?(@adapters, engine)
+
   @spec inventory_all(keyword()) :: {:ok, [ModelRef.t()]} | {:error, term()}
   def inventory_all(opts \\ []) do
-    enabled = Application.get_env(:airo_agent, :engines, [:llama_cpp])
+    # `AIRO_AGENT_ENGINES` is host-set, so guard against an engine with no adapter
+    # (e.g. `:vllm` before that adapter lands): skip + warn rather than crash the
+    # whole inventory scan on a Map.fetch!/2.
+    {known, unknown} =
+      Application.get_env(:airo_agent, :engines, [:llama_cpp])
+      |> Enum.split_with(&known?/1)
 
-    enabled
+    Enum.each(unknown, fn engine ->
+      Logger.warning(
+        "airo_agent: ignoring unknown engine #{inspect(engine)} — no adapter registered"
+      )
+    end)
+
+    known
     |> Enum.map(&adapter/1)
     |> Enum.reduce_while({:ok, []}, fn mod, {:ok, acc} ->
       case mod.inventory(opts) do

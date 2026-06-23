@@ -145,7 +145,7 @@ defmodule AiroAgent.Engine.LlamaCpp do
 
   # HF cache layout: .../models--ORG--REPO/snapshots/<sha>/[VARIANT/]file.gguf
   defp ref_from_path(path) do
-    {repo, revision} = repo_and_revision(path)
+    {repo, revision} = AiroAgent.HFCache.repo_and_revision(path)
     file = Path.basename(path)
     meta = AiroAgent.GGUF.metadata(path)
 
@@ -161,24 +161,6 @@ defmodule AiroAgent.Engine.LlamaCpp do
       capabilities: [],
       engine: :llama_cpp
     }
-  end
-
-  defp repo_and_revision(path) do
-    parts = Path.split(path)
-
-    repo =
-      case Enum.find(parts, &String.starts_with?(&1, "models--")) do
-        nil -> nil
-        dir -> dir |> String.replace_prefix("models--", "") |> String.replace("--", "/")
-      end
-
-    revision =
-      case Enum.drop_while(parts, &(&1 != "snapshots")) do
-        ["snapshots", sha | _] -> sha
-        _ -> nil
-      end
-
-    {repo, revision}
   end
 
   defp build_id(nil, file), do: Path.rootname(file)

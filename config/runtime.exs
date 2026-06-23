@@ -60,6 +60,27 @@ slots =
   |> String.split(",", trim: true)
   |> Enum.map(&(&1 |> String.trim() |> String.to_integer()))
 
+# Which engine adapters this host runs (Model 2 is per-host: a llama.cpp box and
+# a vLLM box are different hosts). CSV in AIRO_AGENT_ENGINES; unknown names are
+# dropped here and again in Engine.inventory_all/1 (belt and suspenders). Default
+# is llama.cpp, so existing hosts need no new env.
+known_engines = %{"llama_cpp" => :llama_cpp, "vllm" => :vllm}
+
+engines =
+  case System.get_env("AIRO_AGENT_ENGINES") do
+    blank when blank in [nil, ""] ->
+      [:llama_cpp]
+
+    csv ->
+      case csv
+           |> String.split(",", trim: true)
+           |> Enum.map(&known_engines[String.trim(&1)])
+           |> Enum.reject(&is_nil/1) do
+        [] -> [:llama_cpp]
+        list -> list
+      end
+  end
+
 # In test, bind an OS-assigned port (0) so the test app's control API never
 # clashes with a running agent service holding 4400.
 default_port = if config_env() == :test, do: "0", else: "4400"
@@ -79,6 +100,8 @@ config :airo_agent,
   model_roots: [hf_cache],
   llama_cpp_lib_path: llama_lib,
   engine_bin: %{llama_cpp: llama_bin},
+  # Engine adapters active on this host (per-host; see AIRO_AGENT_ENGINES above).
+  engines: engines,
   # Channel push (decision #3): use the slipstream client when a socket URL is
   # set, else just log lifecycle events locally.
   host_id: host_id,
