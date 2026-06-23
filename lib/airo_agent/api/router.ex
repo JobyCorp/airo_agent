@@ -11,6 +11,10 @@ defmodule AiroAgent.Api.Router do
       POST /inventory/refresh  -> rescan local catalog
       POST /load   {model, slot, profile?}  -> SlotInfo
       POST /unload {slot}                   -> { ok: true }
+      GET  /openapi            -> the OpenAPI spec for all of the above
+
+  The published contract Airo codes against is `AiroAgent.Api.Spec`, served as
+  JSON at `GET /openapi`.
   """
 
   use Plug.Router
@@ -18,8 +22,13 @@ defmodule AiroAgent.Api.Router do
 
   plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
   plug(AiroAgent.Api.Auth)
+  plug(OpenApiSpex.Plug.PutApiSpec, module: AiroAgent.Api.Spec)
   plug(:match)
   plug(:dispatch)
+
+  # The machine-readable contract (AiroAgent.Api.Spec), rendered from what
+  # PutApiSpec stashed on the conn.
+  get("/openapi", do: OpenApiSpex.Plug.RenderSpec.call(conn, []))
 
   @profile_keys ~w(ctx ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type parallel jinja chat_template reasoning_budget reasoning_format ld_library_path extra_argv)
 
