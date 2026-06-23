@@ -7,7 +7,8 @@ defmodule AiroAgent.EngineTest do
   describe "known?/1" do
     test "true for a registered adapter, false otherwise" do
       assert Engine.known?(:llama_cpp)
-      refute Engine.known?(:vllm)
+      assert Engine.known?(:vllm)
+      refute Engine.known?(:tgi)
       refute Engine.known?(:nonsense)
     end
   end
@@ -24,15 +25,15 @@ defmodule AiroAgent.EngineTest do
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf!(root) end)
 
-      Application.put_env(:airo_agent, :engines, [:llama_cpp, :vllm])
+      Application.put_env(:airo_agent, :engines, [:llama_cpp, :tgi])
 
       log =
         capture_log(fn ->
-          # Empty root → llama.cpp returns no models; :vllm is dropped, not fetched.
+          # Empty root → llama.cpp returns no models; :tgi is dropped, not fetched.
           assert {:ok, []} = Engine.inventory_all(model_roots: [root])
         end)
 
-      assert log =~ "unknown engine :vllm"
+      assert log =~ "unknown engine :tgi"
     end
   end
 end

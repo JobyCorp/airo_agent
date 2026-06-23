@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# vLLM slot launcher — the ":vllm" engine "binary" airo_agent spawns via muontrap.
+# It wraps podman around `vllm serve …`: the agent passes the vLLM args
+# (serve <snapshot-dir> --port P …) and this adds the container boilerplate.
+#
+# Why podman (not docker): daemonless, so the container is a child of THIS
+# process — muontrap reaping us reaps the container, preserving the "engine dies
+# with the BEAM" invariant. The container is named airo-slot-<port> and force-
+# removed first, so load/swap is idempotent even if a prior one was orphaned.
+#
+# Env (forwarded by the adapter's launch_spec, or from /etc/airo-agent.env):
+#   VLLM_IMAGE              required — a vLLM OpenAI-server image (arm64 on Spark)
+#   AIRO_AGENT_MODEL_ROOT   HF cache to mount read-only (holds the snapshot dir)
+#
+# Phase 1: a working first cut. Phase 2 hardens it (SIGTERM→podman stop trap
+# instead of exec, CDI GPU passthrough validated on GB10, crash reconcile).
+set -euo pipefail
+
+: "${VLLM_IMAGE:?set VLLM_IMAGE to a vLLM OpenAI-server image}"
+MODEL_ROOT="${AIRO_AGENT_MODEL_ROOT:-$HOME/.cache/huggingface/hub}"
+
+# Pull the slot port out of the vLLM args (for the container name + -p mapping).
+port=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--port" ] && port="$a"
+  prev="$a"
+done
+name="airo-slot-${port:-vllm}"
+
+# Idempotent: clear any stale container holding this slot before (re)launching.
+podman rm -f "$name" >/dev/null 2>&1 || true
+
+# --entrypoint vllm makes the image-entrypoint irrelevant: "$@" starts with
+# `serve …`. Replace this process with podman so muontrap supervises it directly.
+exec podman run --rm --name "$name" \
+  --device nvidia.com/gpu=all \
+  -e HF_HUB_OFFLINE=1 \
+  -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
+  -p "${port}:${port}" \
+  --entrypoint vllm \
+  "$VLLM_IMAGE" "$@"

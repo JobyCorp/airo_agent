@@ -10,6 +10,18 @@ hf_cache = System.get_env("AIRO_AGENT_MODEL_ROOT") || Path.expand("~/.cache/hugg
 llama_lib = System.get_env("LLAMA_CPP_LIB")
 llama_bin = System.get_env("LLAMA_SERVER_BIN") || "llama-server"
 
+# vLLM engine: spawned via the podman wrapper shipped in priv/engine/vllm-slot
+# (override with VLLM_SLOT_BIN). VLLM_IMAGE is the container image the wrapper
+# runs — host-specific, set on vLLM hosts only.
+vllm_slot_bin =
+  System.get_env("VLLM_SLOT_BIN") ||
+    case :code.priv_dir(:airo_agent) do
+      {:error, _} -> "vllm-slot"
+      dir -> Path.join([List.to_string(dir), "engine", "vllm-slot"])
+    end
+
+vllm_image = System.get_env("VLLM_IMAGE")
+
 token = System.get_env("AIRO_AGENT_TOKEN")
 
 # Where Airo's /agent socket lives. Set it to push state over the channel
@@ -99,7 +111,9 @@ config :airo_agent,
   slots: slots,
   model_roots: [hf_cache],
   llama_cpp_lib_path: llama_lib,
-  engine_bin: %{llama_cpp: llama_bin},
+  engine_bin: %{llama_cpp: llama_bin, vllm: vllm_slot_bin},
+  # Container image the vllm-slot wrapper runs (vLLM hosts only; nil otherwise).
+  vllm_image: vllm_image,
   # Engine adapters active on this host (per-host; see AIRO_AGENT_ENGINES above).
   engines: engines,
   # Channel push (decision #3): use the slipstream client when a socket URL is

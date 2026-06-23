@@ -51,7 +51,7 @@ defmodule AiroAgent.Engine do
 
   # --- Dispatch helpers: resolve the configured/per-model engine adapter. ---
 
-  @adapters %{llama_cpp: AiroAgent.Engine.LlamaCpp}
+  @adapters %{llama_cpp: AiroAgent.Engine.LlamaCpp, vllm: AiroAgent.Engine.Vllm}
 
   @spec adapter(atom()) :: module()
   def adapter(engine), do: Map.fetch!(@adapters, engine)
