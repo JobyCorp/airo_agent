@@ -117,6 +117,9 @@ defmodule AiroAgent.Notifier.Channel do
       port: e.port,
       resident_model: e.resident_model,
       revision: e.revision,
+      ctx: e.ctx,
+      parallel: e.parallel,
+      engine_build: e.engine_build,
       status: e.type,
       reason: serialize_reason(e.reason),
       at: e.at

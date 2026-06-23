@@ -112,6 +112,18 @@ defmodule AiroAgent.FleetTest do
     assert length(DynamicSupervisor.which_children(Instances)) == 1
   end
 
+  test "loading the resident model with a changed profile reloads it" do
+    {:ok, _} = Fleet.load(model("m6b"), @slot, %{ctx: 4096})
+    FakeInstance.become_ready(child_pid())
+    assert_receive {:event, %Event{type: :up, resident_model: "m6b"}}
+
+    # Same model, new context size — not idempotent: the engine relaunches.
+    assert {:ok, info} = Fleet.load(model("m6b"), @slot, %{ctx: 8192})
+    assert info.status == :loading
+    assert_receive {:event, %Event{type: :loading, port: @slot, resident_model: "m6b"}}
+    assert length(DynamicSupervisor.which_children(Instances)) == 1
+  end
+
   test "loading into an unknown slot errors" do
     assert {:error, :unknown_slot} = Fleet.load(model("x"), 9_999)
   end

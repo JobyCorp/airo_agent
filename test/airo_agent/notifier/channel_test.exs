@@ -63,6 +63,9 @@ defmodule AiroAgent.Notifier.ChannelTest do
       port: 8081,
       resident_model: "org/repo:Q4",
       revision: "abc123",
+      ctx: 65_536,
+      parallel: 4,
+      engine_build: "b1-9633186",
       reason: nil,
       at: ~U[2026-06-22 00:00:00Z]
     })
@@ -73,6 +76,9 @@ defmodule AiroAgent.Notifier.ChannelTest do
              port: 8081,
              resident_model: "org/repo:Q4",
              revision: "abc123",
+             ctx: 65_536,
+             parallel: 4,
+             engine_build: "b1-9633186",
              status: :up,
              reason: nil,
              at: ~U[2026-06-22 00:00:00Z]

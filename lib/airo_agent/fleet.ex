@@ -49,12 +49,16 @@ defmodule AiroAgent.Fleet do
       :error ->
         {:reply, {:error, :unknown_slot}, state}
 
-      {:ok, %{status: :up, model: %ModelRef{id: id}} = slot} when id == model.id ->
-        # Already resident and serving — idempotent.
+      {:ok, %{status: :up, model: %ModelRef{id: id}, profile: current} = slot}
+      when id == model.id and current == profile ->
+        # Already resident and serving with the same profile — idempotent. A
+        # changed profile (e.g. a new context size) is NOT idempotent: it falls
+        # through to the reload branch below so the engine relaunches.
         {:reply, {:ok, slot_info(slot)}, state}
 
       {:ok, slot} ->
-        # Evict whatever's resident (swap), then launch on the now-free port.
+        # Evict whatever's resident (swap or reconfigure), then launch on the
+        # now-free port with the requested profile.
         if running?(slot) do
           free_running(slot)
           await_port_free(port)
@@ -204,11 +208,16 @@ defmodule AiroAgent.Fleet do
   end
 
   defp emit(slot, type, reason) do
+    props = slot.props || %{}
+
     Notifier.publish(%Event{
       type: type,
       port: slot.port,
       resident_model: slot.model && slot.model.id,
       revision: slot.model && slot.model.revision,
+      ctx: props[:ctx],
+      parallel: props[:parallel],
+      engine_build: props[:engine_build],
       reason: reason,
       at: DateTime.utc_now()
     })
