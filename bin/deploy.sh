@@ -157,9 +157,11 @@ for host in "${HOSTS[@]}"; do
   platform="$(platform_for "${host}")" || exit 1
   TARBALL="$(build_for "${platform}")" || exit 1
 
-  echo "  • shipping ${TARBALL} + unit (${platform})"
+  echo "  • shipping ${TARBALL} + unit (${platform}, run user ${RUN_USER})"
   scp -q "${OUT_DIR}/${TARBALL}" "${host}:${REMOTE_TMP}/${TARBALL}"
-  scp -q "deploy/airo-agent.service" "${host}:${REMOTE_TMP}/airo-agent.service"
+  # Substitute the run user into the unit template before shipping (User=/Group=).
+  sed "s/__RUN_USER__/${RUN_USER}/g" "deploy/airo-agent.service" \
+    | ssh "${host}" "cat > ${REMOTE_TMP}/airo-agent.service"
   if [ "${SKIP_ENV:-0}" != "1" ]; then
     echo "  • shipping ${envfile} -> /etc/airo-agent.env"
     scp -q "$envfile" "${host}:${REMOTE_TMP}/airo-agent.env"

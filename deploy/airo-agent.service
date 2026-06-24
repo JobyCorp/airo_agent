@@ -16,12 +16,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=airo-agent
-Group=airo-agent
+# Run user is templated by bin/deploy.sh (RUN_USER, default airo-agent). Hosts
+# whose model cache lives in a real user's home (e.g. /home/jody/.cache) deploy
+# with RUN_USER=jody so the agent can read the cache and inherit docker access.
+User=__RUN_USER__
+Group=__RUN_USER__
 # GPU access for nvidia-smi telemetry; adjust to your driver's device groups.
+# docker access (for container engines like vLLM) comes from the run user's own
+# group membership — bin/deploy.sh adds the run user to the docker group.
 SupplementaryGroups=video render
 
-# Per-host config (advertise host, slots, token, engine paths). 0640 root:airo-agent.
+# Per-host config (advertise host, slots, token, engine paths). 0640 root:<run user>.
 EnvironmentFile=/etc/airo-agent.env
 
 # Standalone control plane: no clustering, so don't start epmd/distribution.
