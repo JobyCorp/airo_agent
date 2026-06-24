@@ -20,10 +20,10 @@ defmodule AiroAgent.Engine.LlamaCpp do
       |> Enum.flat_map(&Path.wildcard(Path.join(&1, "**/*.gguf")))
       # split-shard models: keep only shard 00001 / unsharded files.
       |> Enum.reject(&shard_continuation?/1)
-      # mmproj-*.gguf are vision PROJECTORS — companions loaded WITH a base model
+      # *mmproj*.gguf are vision PROJECTORS — companions loaded WITH a base model
       # via --mmproj, not standalone servable models. Listed, they inventory as
-      # bogus `family=clip` rows Airo would try to load. Their presence is already
-      # surfaced as the sibling model's :vision capability (see capabilities/1).
+      # bogus `family=clip` rows Airo would try to load. Their presence is instead
+      # surfaced as the sibling model's :vision capability (see caps_for/1).
       |> Enum.reject(&projector?/1)
       |> Enum.map(&ref_from_path/1)
 
@@ -38,8 +38,13 @@ defmodule AiroAgent.Engine.LlamaCpp do
     host = Application.get_env(:airo_agent, :engine_bind_host, "127.0.0.1")
 
     # Tool-use + thinking knobs (launch-time identity; restart-on-change):
+    # Vision models ship a separate mmproj projector alongside the text GGUF
+    # (e.g. moondream2); llama-server loads the pair via --mmproj. Auto-attach
+    # the sibling projector (profile :mmproj overrides), so a multimodal model
+    # actually serves vision instead of loading text-only.
     argv =
       ["-m", path, "--host", host, "--port", Integer.to_string(port)] ++
+        flag("--mmproj", profile[:mmproj] || mmproj_sibling(path)) ++
         flag("-c", total_ctx(profile)) ++
         flag("-ngl", profile[:ngl]) ++
         flag("-ncmoe", profile[:n_cpu_moe]) ++
@@ -96,12 +101,23 @@ defmodule AiroAgent.Engine.LlamaCpp do
     do: Map.merge(default_profile(model), profile)
 
   @impl true
-  def capabilities(%ModelRef{path: path}) do
-    base = [:chat]
+  def capabilities(%ModelRef{path: path}), do: caps_for(path)
 
-    if File.exists?(Path.join(Path.dirname(path), "mmproj-F16.gguf")),
-      do: [:vision | base],
-      else: base
+  # :vision when a multimodal projector sits beside the model. Matches any
+  # *mmproj*.gguf — naming differs by publisher (unsloth `mmproj-F16.gguf`,
+  # ggml-org `moondream2-mmproj-f16-*.gguf`).
+  defp caps_for(path) do
+    if mmproj_sibling(path), do: [:vision, :chat], else: [:chat]
+  end
+
+  # The mmproj projector file beside `path`, or nil. Used both to flag :vision and
+  # to pass --mmproj at launch.
+  defp mmproj_sibling(path) do
+    path
+    |> Path.dirname()
+    |> Path.join("*.gguf")
+    |> Path.wildcard()
+    |> Enum.find(&projector?/1)
   end
 
   @doc """
@@ -158,7 +174,7 @@ defmodule AiroAgent.Engine.LlamaCpp do
       size_bytes: file_size(path),
       ctx_max: meta.ctx_max,
       path: path,
-      capabilities: [],
+      capabilities: caps_for(path),
       engine: :llama_cpp
     }
   end
@@ -185,9 +201,11 @@ defmodule AiroAgent.Engine.LlamaCpp do
   defp shard_continuation?(file),
     do: Regex.match?(~r/-0000[2-9]-of-\d+\.gguf$/, file)
 
-  # Multimodal vision projector (CLIP/SigLIP encoder), e.g. mmproj-F16.gguf — a
-  # companion to a base model, never served on its own.
-  defp projector?(file), do: String.starts_with?(Path.basename(file), "mmproj")
+  # Multimodal vision projector (CLIP/SigLIP encoder) — a companion to a base
+  # model, never served on its own. Matched by `mmproj` ANYWHERE in the name, not
+  # just as a prefix: unsloth ships `mmproj-F16.gguf`, ggml-org ships
+  # `moondream2-mmproj-f16-20250414.gguf`. Case-insensitive for safety.
+  defp projector?(file), do: String.contains?(String.downcase(Path.basename(file)), "mmproj")
 
   defp file_size(path) do
     case File.stat(path) do

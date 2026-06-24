@@ -67,6 +67,60 @@ defmodule AiroAgent.Engine.LlamaCppTest do
       assert Enum.any?(paths, &String.ends_with?(&1, "model-Q4_K_M.gguf"))
       refute Enum.any?(paths, &String.contains?(&1, "mmproj"))
     end
+
+    test "mid-name projectors (moondream2-mmproj-*.gguf) are excluded too", %{root: root} do
+      # ggml-org names it with a prefix, not `mmproj-*` — the old starts_with?
+      # check leaked it as a bogus servable model.
+      File.touch!(Path.join(root, "moondream2-mmproj-f16-20250414.gguf"))
+      File.touch!(Path.join(root, "moondream2-text-model-f16_ct-vicuna.gguf"))
+
+      {:ok, refs} = LlamaCpp.inventory(model_roots: [root])
+      paths = Enum.map(refs, & &1.path)
+
+      refute Enum.any?(paths, &String.contains?(&1, "mmproj"))
+      assert Enum.any?(paths, &String.ends_with?(&1, "moondream2-text-model-f16_ct-vicuna.gguf"))
+    end
+
+    test "a model with an mmproj sibling is tagged :vision", %{root: root} do
+      # root already has model-Q4_K_M.gguf + mmproj-F16.gguf from setup.
+      {:ok, refs} = LlamaCpp.inventory(model_roots: [root])
+      ref = Enum.find(refs, &String.ends_with?(&1.path, "model-Q4_K_M.gguf"))
+
+      assert :vision in ref.capabilities
+      assert :chat in ref.capabilities
+    end
+  end
+
+  describe "launch_spec/3 — multimodal --mmproj" do
+    test "auto-attaches the sibling projector" do
+      root = Path.join(System.tmp_dir!(), "airo_mm_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      File.touch!(Path.join(root, "moondream2-text-model.gguf"))
+      proj = Path.join(root, "moondream2-mmproj-f16.gguf")
+      File.touch!(proj)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      {:ok, spec} =
+        LlamaCpp.launch_spec(
+          model(path: Path.join(root, "moondream2-text-model.gguf")),
+          %{},
+          8081
+        )
+
+      assert arg_after(spec.argv, "--mmproj") == proj
+    end
+
+    test "no projector ⇒ no --mmproj flag" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(path: "/cache/repo/plain.gguf"), %{}, 8081)
+      refute "--mmproj" in spec.argv
+    end
+
+    test "profile :mmproj overrides auto-detection" do
+      {:ok, spec} =
+        LlamaCpp.launch_spec(model(), %{mmproj: "/custom/proj.gguf"}, 8081)
+
+      assert arg_after(spec.argv, "--mmproj") == "/custom/proj.gguf"
+    end
   end
 
   describe "resolve_profile/2" do
