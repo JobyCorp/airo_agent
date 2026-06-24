@@ -46,4 +46,33 @@ defmodule AiroAgent.GPUTest do
       assert GPU.parse_meminfo("SomethingElse: 1 kB\n") == :error
     end
   end
+
+  describe "parse_darwin_mem/2 (macOS unified-memory source)" do
+    @vmstat """
+    Mach Virtual Memory Statistics: (page size of 16384 bytes)
+    Pages free:                          100000.
+    Pages active:                        200000.
+    Pages inactive:                      150000.
+    Pages speculative:                    50000.
+    Pages wired down:                    120000.
+    Pages purgeable:                      10000.
+    Pages occupied by compressor:         80000.
+    """
+
+    test "total from hw.memsize; used = (active + wired + compressor) pages × page size" do
+      # 32 GiB total.
+      assert {total_mb, used_mb} = GPU.parse_darwin_mem("34359738368\n", @vmstat)
+      assert_in_delta total_mb, 32_768.0, 0.01
+      # (200000 + 120000 + 80000) pages × 16384 B = 400000 × 16384.
+      assert_in_delta used_mb, 400_000 * 16_384 / 1_048_576, 0.01
+    end
+
+    test "errors when sysctl output isn't a byte count" do
+      assert GPU.parse_darwin_mem("nonsense", @vmstat) == :error
+    end
+
+    test "errors when vm_stat has no page size header" do
+      assert GPU.parse_darwin_mem("34359738368\n", "Pages active: 1.\n") == :error
+    end
+  end
 end
