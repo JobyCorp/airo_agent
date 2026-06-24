@@ -19,7 +19,16 @@
 #   AIRO_GPU_ARGS            override GPU flags (default: --gpus all for docker,
 #                            --device nvidia.com/gpu=all for podman/CDI)
 #   AIRO_VLLM_CMD_PREFIX     in-container command before the args (default: vllm —
-#                            the NGC image's nvidia_entrypoint.sh execs `vllm serve …`)
+#                            the NGC image's nvidia_entrypoint.sh execs `vllm serve …`).
+#                            Set empty (AIRO_VLLM_CMD_PREFIX=) for images whose
+#                            entrypoint already invokes vllm.
+#   AIRO_VLLM_ENTRYPOINT     override the image ENTRYPOINT (default: none). NGC runs
+#                            the CMD verbatim, so leave unset. The official
+#                            vllm/vllm-openai image bakes `vllm serve` into its
+#                            ENTRYPOINT, which would DOUBLE the `serve` our args
+#                            already carry → set AIRO_VLLM_ENTRYPOINT=vllm together
+#                            with AIRO_VLLM_CMD_PREFIX= so it runs `vllm serve <dir> …`
+#                            exactly once.
 #   AIRO_VLLM_RUN_ARGS       extra runtime args (default: --ipc=host + raised
 #                            memlock/stack ulimits — vLLM needs host shared memory;
 #                            the proven sparky container runs with --ipc=host)
@@ -31,7 +40,13 @@ set -euo pipefail
 : "${VLLM_IMAGE:?set VLLM_IMAGE to a vLLM OpenAI-server image}"
 MODEL_ROOT="${AIRO_AGENT_MODEL_ROOT:-$HOME/.cache/huggingface/hub}"
 RT="${AIRO_CONTAINER_RUNTIME:-podman}"
-CMD_PREFIX="${AIRO_VLLM_CMD_PREFIX:-vllm}"
+# `-` not `:-`: an explicitly empty AIRO_VLLM_CMD_PREFIX is honored (needed when
+# AIRO_VLLM_ENTRYPOINT=vllm already supplies the binary).
+CMD_PREFIX="${AIRO_VLLM_CMD_PREFIX-vllm}"
+
+# Optional ENTRYPOINT override (for images that bake `vllm serve` into ENTRYPOINT).
+entrypoint_args=()
+[ -n "${AIRO_VLLM_ENTRYPOINT:-}" ] && entrypoint_args=(--entrypoint "$AIRO_VLLM_ENTRYPOINT")
 
 # GPU passthrough differs by runtime; both go through nvidia-container-toolkit.
 if [ -n "${AIRO_GPU_ARGS:-}" ]; then
@@ -64,6 +79,7 @@ read -r -a vllm_run_args <<<"${AIRO_VLLM_RUN_ARGS:---ipc=host --ulimit memlock=-
 # i.e. `vllm serve <dir> …`.
 exec "$RT" run --rm --name "$name" \
   "${gpu_args[@]}" \
+  "${entrypoint_args[@]}" \
   "${vllm_run_args[@]}" \
   -e HF_HUB_OFFLINE=1 \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
