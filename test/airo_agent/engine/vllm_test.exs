@@ -141,6 +141,18 @@ defmodule AiroAgent.Engine.VllmTest do
       refute "--reasoning-parser" in spec.argv
     end
 
+    test "host-level AIRO_VLLM_EXTRA_ARGS ride bare profiles; a profile's own extra_argv replaces them" do
+      Application.put_env(:airo_agent, :vllm_extra_argv, ["--enforce-eager"])
+      on_exit(fn -> Application.delete_env(:airo_agent, :vllm_extra_argv) end)
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+      assert "--enforce-eager" in spec.argv
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{extra_argv: ["--seed", "1"]}, 8081)
+      refute "--enforce-eager" in spec.argv
+      assert "--seed" in spec.argv
+    end
+
     test "disable_thinking maps to a server-side template kwarg" do
       {:ok, spec} = Vllm.launch_spec(model(), %{disable_thinking: true}, 8081)
 

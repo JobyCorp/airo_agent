@@ -130,7 +130,11 @@ defmodule AiroAgent.Engine.Vllm do
       tensor_parallel_size: 1,
       dtype: "auto",
       trust_remote_code: false,
-      ctx: default_ctx(model.ctx_max)
+      ctx: default_ctx(model.ctx_max),
+      # Host-level tuning (AIRO_VLLM_EXTRA_ARGS), e.g. --enforce-eager on a
+      # card too small for CUDA-graph capture. A profile's own extra_argv
+      # replaces it (deployments that tune themselves own the whole list).
+      extra_argv: Application.get_env(:airo_agent, :vllm_extra_argv)
     }
   end
 

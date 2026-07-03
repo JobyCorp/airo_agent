@@ -22,6 +22,16 @@ vllm_slot_bin =
 
 vllm_image = System.get_env("VLLM_IMAGE")
 
+# Host-level vLLM tuning argv, applied when a load profile brings no extra_argv
+# of its own (a profile's extra_argv replaces it wholesale). For per-card facts
+# a Deployment shouldn't have to repeat, e.g. a 16 GB card that only fits with
+# "--enforce-eager --max-num-batched-tokens 2048".
+vllm_extra_argv =
+  case System.get_env("AIRO_VLLM_EXTRA_ARGS") do
+    nil -> nil
+    args -> String.split(args, " ", trim: true)
+  end
+
 # Container runtime for container-based engines (vLLM). podman (default) | docker.
 # The vllm-slot wrapper reads the same env var; this exposes it to the agent for
 # the boot-time orphan sweep (see AiroAgent.Engine.Vllm.reap_orphans/0).
@@ -119,6 +129,7 @@ config :airo_agent,
   engine_bin: %{llama_cpp: llama_bin, vllm: vllm_slot_bin},
   # Container image the vllm-slot wrapper runs (vLLM hosts only; nil otherwise).
   vllm_image: vllm_image,
+  vllm_extra_argv: vllm_extra_argv,
   container_runtime: container_runtime,
   # Engine adapters active on this host (per-host; see AIRO_AGENT_ENGINES above).
   engines: engines,

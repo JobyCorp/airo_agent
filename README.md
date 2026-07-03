@@ -64,6 +64,7 @@ overrides).
 | `AIRO_AGENT_HOST_ID` | hostname | Stable id Airo keys the host on. |
 | `AIRO_AGENT_TOKEN` | — | Bearer token for the control API + channel join (optional; independent of exposure). |
 | `AIRO_SOCKET_URL` | — | Airo `/agent` socket; when set, the channel notifier connects and pushes state (else log-only). |
+| `AIRO_VLLM_EXTRA_ARGS` | — | Host-level vLLM tuning argv (e.g. `--enforce-eager --max-num-batched-tokens 2048` on a 16 GB card), used when a load profile has no `extra_argv` of its own. |
 | `LLAMA_SERVER_BIN` | `llama-server` (PATH) | Engine binary. |
 | `LLAMA_CPP_LIB` | — | `LD_LIBRARY_PATH` for the engine (shared-lib builds). |
 
