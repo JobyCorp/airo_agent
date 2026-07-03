@@ -37,7 +37,10 @@ defmodule AiroAgent.Api.Schemas do
           nullable: true,
           description: "Model's max trained context (distinct from a slot's serving ctx)."
         },
-        path: %Schema{type: :string, description: "Absolute path to the GGUF (first shard if split)."},
+        path: %Schema{
+          type: :string,
+          description: "Absolute path to the GGUF (first shard if split)."
+        },
         capabilities: %Schema{type: :array, items: %Schema{type: :string}, example: ["chat"]},
         engine: %Schema{type: :string, example: "llama_cpp"}
       },
@@ -116,7 +119,8 @@ defmodule AiroAgent.Api.Schemas do
 
     OpenApiSpex.schema(%{
       title: "LoadRequest",
-      description: "Place a model into a slot. `profile` carries launch knobs (ctx, parallel, …).",
+      description:
+        "Place a model into a slot. `profile` carries launch knobs (ctx, parallel, …).",
       type: :object,
       properties: %{
         model: %Schema{type: :string, description: "ModelRef id from /inventory."},
@@ -124,8 +128,11 @@ defmodule AiroAgent.Api.Schemas do
         profile: %Schema{type: :object, additionalProperties: true}
       },
       required: [:model, :slot],
-      example: %{"model" => "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL", "slot" => 8081,
-                 "profile" => %{"ctx" => 146_432, "parallel" => 1}}
+      example: %{
+        "model" => "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL",
+        "slot" => 8081,
+        "profile" => %{"ctx" => 146_432, "parallel" => 1}
+      }
     })
   end
 

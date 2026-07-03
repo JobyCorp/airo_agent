@@ -42,6 +42,16 @@ GET  /openapi            -> the OpenAPI spec for all of the above
 **per-request** window — the agent sets llama-server's `-c = ctx × parallel`,
 since `-c` is the total KV budget split across `--parallel` sequences. So
 `{ "ctx": 146432, "parallel": 1 }` gives one request the full ~142k window.
+(vLLM has no ×parallel: `ctx → --max-model-len` directly, and a load *without*
+`ctx` is capped at `min(ctx_max, 32768)` so vLLM's own full-window default
+can't OOM a small card.)
+
+Engine-neutral knob: `"disable_thinking": true` turns off reasoning traces at
+launch — llama.cpp gets `--reasoning off`, vLLM gets
+`--default-chat-template-kwargs '{"enable_thinking": false}'`. vLLM loads also
+auto-detect the model's tool-call format from its chat template and add the
+matching `--tool-call-parser` (an `extra_argv` carrying `--tool-call-parser`
+overrides).
 
 ## Configuration (env)
 

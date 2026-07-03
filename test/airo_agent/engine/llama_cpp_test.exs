@@ -50,6 +50,21 @@ defmodule AiroAgent.Engine.LlamaCppTest do
     end
   end
 
+  describe "launch_spec/3 — disable_thinking (engine-neutral knob)" do
+    test "maps to --reasoning off (NOT --reasoning-budget 0, which only caps)" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{disable_thinking: true}, 8081)
+      assert spec.argv |> Enum.drop_while(&(&1 != "--reasoning")) |> Enum.at(1) == "off"
+    end
+
+    test "absent/false ⇒ no flag (thinking stays on, the engine default)" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{}, 8081)
+      refute "--reasoning" in spec.argv
+
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{disable_thinking: false}, 8081)
+      refute "--reasoning" in spec.argv
+    end
+  end
+
   describe "inventory/1 — vision projectors are not models" do
     setup do
       root = Path.join(System.tmp_dir!(), "airo_inv_#{System.unique_integer([:positive])}")

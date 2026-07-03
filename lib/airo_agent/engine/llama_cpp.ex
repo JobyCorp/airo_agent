@@ -57,6 +57,7 @@ defmodule AiroAgent.Engine.LlamaCpp do
         flag("--chat-template", profile[:chat_template]) ++
         flag("--reasoning-budget", profile[:reasoning_budget]) ++
         flag("--reasoning-format", profile[:reasoning_format]) ++
+        thinking_flags(profile[:disable_thinking]) ++
         List.wrap(profile[:extra_argv])
 
     env =
@@ -228,6 +229,11 @@ defmodule AiroAgent.Engine.LlamaCpp do
     do: ctx * (Map.get(profile, :parallel) || 1)
 
   defp total_ctx(_), do: nil
+
+  # Engine-neutral disable_thinking knob. `--reasoning off` skips the reasoning
+  # trace entirely; `--reasoning-budget 0` does NOT (it only caps the budget).
+  defp thinking_flags(true), do: ["--reasoning", "off"]
+  defp thinking_flags(_), do: []
 
   defp flag(_k, nil), do: []
   defp flag(k, v), do: [k, to_string(v)]

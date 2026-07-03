@@ -97,7 +97,10 @@ defmodule AiroAgent.Api.Spec do
   end
 
   defp json_resp(description, schema) do
-    %Response{description: description, content: %{"application/json" => %MediaType{schema: schema}}}
+    %Response{
+      description: description,
+      content: %{"application/json" => %MediaType{schema: schema}}
+    }
   end
 
   defp json_body(description, schema) do

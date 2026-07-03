@@ -9,6 +9,8 @@ defmodule AiroAgent.Engine.VllmTest do
       id: Keyword.get(opts, :id, "org/repo"),
       repo: "org/repo",
       path: Keyword.get(opts, :path, "/cache/models--org--repo/snapshots/abc"),
+      family: Keyword.get(opts, :family),
+      ctx_max: Keyword.get(opts, :ctx_max),
       engine: :vllm
     }
   end
@@ -40,13 +42,124 @@ defmodule AiroAgent.Engine.VllmTest do
       assert spec.readiness == {:http_get, "/health"}
     end
 
-    test "omits ctx/parallel flags when unset (vLLM uses its own defaults)" do
+    test "omits ctx/parallel flags when unset AND ctx_max is unknown" do
       {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
       refute "--max-model-len" in spec.argv
       refute "--max-num-seqs" in spec.argv
       # …but the safe defaults are still applied:
       assert arg_after(spec.argv, "--tensor-parallel-size") == "1"
       assert arg_after(spec.argv, "--dtype") == "auto"
+    end
+  end
+
+  describe "launch_spec/3 — bare-profile ctx cap" do
+    test "a bare profile is capped, not vLLM's full-window default" do
+      # Without this, vLLM defaults --max-model-len to max_position_embeddings
+      # (262k on Qwen3.5) and OOM-crashes a 16 GB card after weights load.
+      {:ok, spec} = Vllm.launch_spec(model(ctx_max: 262_144), %{}, 8081)
+      assert arg_after(spec.argv, "--max-model-len") == "32768"
+    end
+
+    test "a small model's full window is under the cap and used as-is" do
+      {:ok, spec} = Vllm.launch_spec(model(ctx_max: 8192), %{}, 8081)
+      assert arg_after(spec.argv, "--max-model-len") == "8192"
+    end
+
+    test "an explicit profile ctx wins over the cap (big windows are opt-in)" do
+      {:ok, spec} = Vllm.launch_spec(model(ctx_max: 262_144), %{ctx: 262_144}, 8081)
+      assert arg_after(spec.argv, "--max-model-len") == "262144"
+    end
+
+    test "a nil ctx in the request means unset, not uncapped" do
+      {:ok, spec} = Vllm.launch_spec(model(ctx_max: 262_144), %{ctx: nil}, 8081)
+      assert arg_after(spec.argv, "--max-model-len") == "32768"
+    end
+  end
+
+  describe "launch_spec/3 — tool calling + thinking" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "airo_vllm_tpl_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{dir: root}
+    end
+
+    test "Qwen3.5/Coder XML template → qwen3_xml parser + auto tool choice", %{dir: dir} do
+      File.write!(Path.join(dir, "chat_template.jinja"), """
+      <tool_call>\n<function=example>\n<parameter=x>\n</parameter>\n</function>\n</tool_call>
+      """)
+
+      {:ok, spec} = Vllm.launch_spec(model(path: dir, family: "qwen3_5"), %{}, 8081)
+      assert "--enable-auto-tool-choice" in spec.argv
+      assert arg_after(spec.argv, "--tool-call-parser") == "qwen3_xml"
+      assert arg_after(spec.argv, "--reasoning-parser") == "qwen3"
+    end
+
+    test "hermes-style JSON template → hermes parser", %{dir: dir} do
+      File.write!(
+        Path.join(dir, "chat_template.jinja"),
+        ~s(<tool_call>\n{"name": "{{ tool_call.name }}", "arguments": …}\n</tool_call>)
+      )
+
+      {:ok, spec} = Vllm.launch_spec(model(path: dir, family: "qwen3"), %{}, 8081)
+      assert arg_after(spec.argv, "--tool-call-parser") == "hermes"
+    end
+
+    test "template embedded in tokenizer_config.json is found too", %{dir: dir} do
+      File.write!(
+        Path.join(dir, "tokenizer_config.json"),
+        Jason.encode!(%{"chat_template" => "<tool_call>\n<function=f>…</function>"})
+      )
+
+      {:ok, spec} = Vllm.launch_spec(model(path: dir), %{}, 8081)
+      assert arg_after(spec.argv, "--tool-call-parser") == "qwen3_xml"
+    end
+
+    test "no template / unrecognized format → no parser flags (vLLM default)", %{dir: dir} do
+      {:ok, spec} = Vllm.launch_spec(model(path: dir), %{}, 8081)
+      refute "--enable-auto-tool-choice" in spec.argv
+      refute "--tool-call-parser" in spec.argv
+      refute "--reasoning-parser" in spec.argv
+    end
+
+    test "extra_argv carrying --tool-call-parser owns the choice — nothing auto-added", %{
+      dir: dir
+    } do
+      File.write!(Path.join(dir, "chat_template.jinja"), "<function=f>")
+      extra = ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+
+      {:ok, spec} = Vllm.launch_spec(model(path: dir), %{extra_argv: extra}, 8081)
+      assert Enum.count(spec.argv, &(&1 == "--tool-call-parser")) == 1
+      assert arg_after(spec.argv, "--tool-call-parser") == "hermes"
+    end
+
+    test "non-qwen3 family gets the tool parser but no reasoning parser", %{dir: dir} do
+      File.write!(Path.join(dir, "chat_template.jinja"), "<function=f>")
+
+      {:ok, spec} = Vllm.launch_spec(model(path: dir, family: "llama"), %{}, 8081)
+      assert arg_after(spec.argv, "--tool-call-parser") == "qwen3_xml"
+      refute "--reasoning-parser" in spec.argv
+    end
+
+    test "disable_thinking maps to a server-side template kwarg" do
+      {:ok, spec} = Vllm.launch_spec(model(), %{disable_thinking: true}, 8081)
+
+      assert arg_after(spec.argv, "--default-chat-template-kwargs") ==
+               ~s({"enable_thinking": false})
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+      refute "--default-chat-template-kwargs" in spec.argv
+    end
+  end
+
+  describe "tool_parser_for_template/1" do
+    test "GLM-style <tool_call> with <arg_key> pairs is NOT hermes — no parser" do
+      template = "<tool_call>{{ name }}\n<arg_key>k</arg_key><arg_value>v</arg_value>"
+      assert Vllm.tool_parser_for_template(template) == nil
+    end
+
+    test "nil-safe" do
+      assert Vllm.tool_parser_for_template(nil) == nil
     end
   end
 
@@ -135,6 +248,22 @@ defmodule AiroAgent.Engine.VllmTest do
       assert ref.ctx_max == 131_072
       assert ref.engine == :vllm
       assert ref.capabilities == [:chat]
+    end
+
+    test "reads ctx_max from text_config on VL models (Qwen3.5 nests it)", %{root: root} do
+      snapshot(root, "models--QuantTrio--Qwen3.5-9B-AWQ", "938f8e3", %{
+        "model_type" => "qwen3_5",
+        "vision_config" => %{"depth" => 27},
+        "text_config" => %{
+          "model_type" => "qwen3_5_text",
+          "max_position_embeddings" => 262_144
+        }
+      })
+
+      {:ok, [ref]} = Vllm.inventory(model_roots: [root])
+      assert ref.ctx_max == 262_144
+      assert ref.family == "qwen3_5"
+      assert :vision in ref.capabilities
     end
 
     test "reads the quant method and folds it into the id", %{root: root} do

@@ -57,7 +57,7 @@ Boot order (`application.ex`): orphan-container sweep (vLLM only) → `GPU` → 
 
 ### Two things that are subtle and easy to get wrong
 
-1. **The ctx contract differs per engine.** llama.cpp's `-c` is the *total* KV budget split across `--parallel` sequences, so the agent sets `-c = ctx × parallel` (contract "A": `ctx` is the per-request window). vLLM's `--max-model-len` IS the per-request window directly (no ×parallel), and `parallel → --max-num-seqs`. See the moduledocs in `engine/llama_cpp.ex` and `engine/vllm.ex`.
+1. **The ctx contract differs per engine.** llama.cpp's `-c` is the *total* KV budget split across `--parallel` sequences, so the agent sets `-c = ctx × parallel` (contract "A": `ctx` is the per-request window). vLLM's `--max-model-len` IS the per-request window directly (no ×parallel), and `parallel → --max-num-seqs`. A vLLM load with NO `ctx` is capped at `min(ctx_max, 32768)` — vLLM's own default is the model's full window, which OOMs small cards. See the moduledocs in `engine/llama_cpp.ex` and `engine/vllm.ex`.
 
 2. **A changed `profile` is NOT idempotent.** `Fleet.load/3` short-circuits only when the same model is resident *with the same profile*; a new profile (e.g. different ctx) falls through to a full engine relaunch.
 

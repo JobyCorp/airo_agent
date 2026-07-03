@@ -18,6 +18,25 @@ defmodule AiroAgent.Engine.Vllm do
   Capabilities are conservative for now (`:chat`, plus `:vision` when the config
   carries a `vision_config`); finer detection (embeddings) lands later.
 
+  Three safety/mechanism defaults this adapter owns (mechanism, not policy —
+  Airo still decides; an explicit profile always wins):
+
+    * **Bare-profile ctx cap.** Without `--max-model-len`, vLLM defaults to the
+      model's FULL `max_position_embeddings` (262k on Qwen3.5) and OOM-crashes
+      any card whose KV can't hold it. `default_profile/1` caps a bare load at
+      `min(ctx_max, 32768)` — the vLLM twin of llama.cpp's parallel-1
+      default. Big windows are an explicit opt-in via `profile.ctx`.
+    * **Tool-call parser.** The model's chat template dictates the tool-call
+      wire format, so `launch_spec/3` sniffs the template and adds
+      `--enable-auto-tool-choice --tool-call-parser <matching>` (Qwen3.5/Coder
+      XML → `qwen3_xml`; Hermes-style JSON → `hermes`). Without the parser,
+      tool calls come back as raw text and Airo's tool loop breaks. Skipped
+      when `extra_argv` already carries `--tool-call-parser`, or the template
+      format isn't recognized.
+    * **`disable_thinking` knob.** The engine-neutral profile key maps here to
+      `--default-chat-template-kwargs '{"enable_thinking": false}'` (vLLM
+      ≥ 0.10; llama.cpp maps the same knob to `--reasoning off`).
+
   `runtime_props/1` scrapes the resolved per-request context (`/v1/models`
   `max_model_len`) and engine version (`/version`). `parallel`/`ctx_total` have no
   runtime analogue — vLLM owns paged-KV batching internally (see the ctx contract
@@ -32,6 +51,9 @@ defmodule AiroAgent.Engine.Vllm do
 
   alias AiroAgent.{HFCache, ModelRef}
   require Logger
+
+  # Bare-profile --max-model-len cap (see moduledoc). Explicit profile.ctx wins.
+  @default_ctx_cap 32_768
 
   @impl true
   def inventory(opts) do
@@ -78,6 +100,8 @@ defmodule AiroAgent.Engine.Vllm do
         flag("--quantization", profile[:quantization]) ++
         flag("--kv-cache-dtype", profile[:kv_cache_dtype]) ++
         bool_flag("--trust-remote-code", profile[:trust_remote_code]) ++
+        thinking_flags(profile[:disable_thinking]) ++
+        tool_flags(model, profile) ++
         List.wrap(profile[:extra_argv])
 
     spec = %{
@@ -96,24 +120,108 @@ defmodule AiroAgent.Engine.Vllm do
   end
 
   @impl true
-  def default_profile(%ModelRef{}) do
-    # Minimal + safe: single GB10 (tp=1), auto dtype, no remote code. ctx /
-    # parallel / gpu-mem / quantization are left to vLLM's own defaults (and its
-    # config auto-detection) unless Airo sets them per Deployment.
+  def default_profile(%ModelRef{} = model) do
+    # Minimal + safe: single GB10 (tp=1), auto dtype, no remote code. parallel /
+    # gpu-mem / quantization are left to vLLM's own defaults (and its config
+    # auto-detection) unless Airo sets them per Deployment. ctx is the one
+    # exception — vLLM's own default is the model's FULL window, which OOMs
+    # small cards (see moduledoc), so a bare load is capped.
     %{
       tensor_parallel_size: 1,
       dtype: "auto",
-      trust_remote_code: false
+      trust_remote_code: false,
+      ctx: default_ctx(model.ctx_max)
     }
   end
 
+  # Unknown ctx_max → no cap to compute; leave --max-model-len to vLLM (it reads
+  # the model config itself, which is more than we know here).
+  defp default_ctx(nil), do: nil
+  defp default_ctx(ctx_max), do: min(ctx_max, @default_ctx_cap)
+
   @impl true
-  def resolve_profile(%ModelRef{} = model, profile),
-    do: Map.merge(default_profile(model), profile)
+  def resolve_profile(%ModelRef{} = model, profile) do
+    # nil request values mean "unset", not "override the default with nothing" —
+    # e.g. a load with ctx: nil must still get the bare-profile ctx cap.
+    request = for {k, v} <- profile, v != nil, into: %{}, do: {k, v}
+    Map.merge(default_profile(model), request)
+  end
 
   @impl true
   def capabilities(%ModelRef{path: dir}),
     do: dir |> Path.join("config.json") |> read_config() |> capabilities_from_config()
+
+  # --- tool calling / thinking (launch-time identity, like llama.cpp's knobs) ---
+
+  # Engine-neutral disable_thinking knob → vLLM's server-side template kwarg.
+  defp thinking_flags(true),
+    do: ["--default-chat-template-kwargs", ~s({"enable_thinking": false})]
+
+  defp thinking_flags(_), do: []
+
+  # Auto tool-calling: sniff the chat template for its tool-call wire format and
+  # add the matching parser. A profile that already carries --tool-call-parser
+  # in extra_argv owns the choice; an unrecognized template gets no flags (vLLM's
+  # default — tool calls return as raw text, same as before this existed).
+  defp tool_flags(%ModelRef{} = model, profile) do
+    extra = profile[:extra_argv] |> List.wrap() |> Enum.map(&to_string/1)
+
+    with false <- "--tool-call-parser" in extra,
+         parser when not is_nil(parser) <- tool_parser(model) do
+      ["--enable-auto-tool-choice", "--tool-call-parser", parser] ++
+        reasoning_parser_flags(model, extra)
+    else
+      _ -> []
+    end
+  end
+
+  @doc false
+  # The template's literal syntax → the vLLM parser that reads it back.
+  #   <function=name><parameter=…>   Qwen3.5 / Qwen3-Coder XML  → qwen3_xml
+  #   <tool_call>{"name": …}         Hermes-style JSON (Qwen3)  → hermes
+  # Deliberately narrow: e.g. GLM also writes <tool_call> but with <arg_key>
+  # pairs hermes can't parse — it matches neither arm and gets no flags.
+  def tool_parser_for_template(template) when is_binary(template) do
+    cond do
+      String.contains?(template, "<function=") ->
+        "qwen3_xml"
+
+      String.contains?(template, "<tool_call>") and String.contains?(template, ~s({"name")) ->
+        "hermes"
+
+      true ->
+        nil
+    end
+  end
+
+  def tool_parser_for_template(_), do: nil
+
+  defp tool_parser(%ModelRef{path: dir}),
+    do: dir |> chat_template() |> tool_parser_for_template()
+
+  # HF snapshots ship the template either as chat_template.jinja (new style) or
+  # embedded in tokenizer_config.json.
+  defp chat_template(dir) do
+    jinja = Path.join(dir, "chat_template.jinja")
+
+    with {:error, _} <- File.read(jinja),
+         {:ok, body} <- File.read(Path.join(dir, "tokenizer_config.json")),
+         {:ok, %{"chat_template" => t}} when is_binary(t) <- Jason.decode(body) do
+      t
+    else
+      {:ok, template} when is_binary(template) -> template
+      _ -> nil
+    end
+  end
+
+  # Qwen3-family thinking traces (<think>…</think>) need the qwen3 reasoning
+  # parser so they land in `reasoning`, not `content`. Harmless when thinking
+  # is disabled; other families are left to vLLM's default.
+  defp reasoning_parser_flags(%ModelRef{family: "qwen3" <> _}, extra) do
+    if "--reasoning-parser" in extra, do: [], else: ["--reasoning-parser", "qwen3"]
+  end
+
+  defp reasoning_parser_flags(_model, _extra), do: []
 
   @doc false
   def capabilities_from_config(config) when is_map(config) do
@@ -202,11 +310,19 @@ defmodule AiroAgent.Engine.Vllm do
       quant: quant,
       family: config["model_type"] || first_arch(config),
       size_bytes: safetensors_bytes(dir),
-      ctx_max: config["max_position_embeddings"],
+      ctx_max: ctx_max(config),
       path: dir,
       capabilities: capabilities_from_config(config),
       engine: :vllm
     }
+  end
+
+  # VL configs (e.g. Qwen3.5) nest the text model's limits under text_config —
+  # a top-level-only read reports ctx_max nil, Airo can't validate capacity, and
+  # a bare load OOMs small cards on the model's full window.
+  defp ctx_max(config) do
+    config["max_position_embeddings"] ||
+      get_in(config, ["text_config", "max_position_embeddings"])
   end
 
   defp read_config(path) do

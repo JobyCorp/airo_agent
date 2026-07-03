@@ -34,7 +34,7 @@ defmodule AiroAgent.Api.Router do
   # /load profile is dropped by atomize_profile/1. `ctx`/`parallel`/`extra_argv`
   # are shared; the rest are engine-specific knobs the adapter understands.
   @profile_keys ~w(
-    ctx parallel extra_argv
+    ctx parallel extra_argv disable_thinking
     ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type jinja
     chat_template reasoning_budget reasoning_format ld_library_path
     tensor_parallel_size gpu_memory_utilization dtype quantization
