@@ -10,6 +10,23 @@ hf_cache = System.get_env("AIRO_AGENT_MODEL_ROOT") || Path.expand("~/.cache/hugg
 llama_lib = System.get_env("LLAMA_CPP_LIB")
 llama_bin = System.get_env("LLAMA_SERVER_BIN") || "llama-server"
 
+# Runaway-thinking guard: host default for llama-server's --reasoning-budget.
+# The engine's own default is -1 (unlimited) — a thinking loop then runs until
+# the whole ctx fills. Applied only when a load profile brings no
+# reasoning_budget of its own; -1 disables the guard host-wide.
+llama_reasoning_budget =
+  String.to_integer(System.get_env("AIRO_LLAMA_REASONING_BUDGET") || "8192")
+
+# Runaway-repetition guard: host default for llama-server's --dry-multiplier.
+# DRY breaks degenerate repetition loops and is near-inert on normal text; the
+# engine's own default is 0.0 (off). Per-request sampler params still override.
+# Set 0 to disable the guard host-wide.
+llama_dry_multiplier =
+  case Float.parse(System.get_env("AIRO_LLAMA_DRY_MULTIPLIER") || "0.8") do
+    {f, ""} -> f
+    _ -> raise "AIRO_LLAMA_DRY_MULTIPLIER must be a number, e.g. 0.8"
+  end
+
 # vLLM engine: spawned via the podman wrapper shipped in priv/engine/vllm-slot
 # (override with VLLM_SLOT_BIN). VLLM_IMAGE is the container image the wrapper
 # runs — host-specific, set on vLLM hosts only.
@@ -126,6 +143,8 @@ config :airo_agent,
   slots: slots,
   model_roots: [hf_cache],
   llama_cpp_lib_path: llama_lib,
+  llama_cpp_reasoning_budget: llama_reasoning_budget,
+  llama_cpp_dry_multiplier: llama_dry_multiplier,
   engine_bin: %{llama_cpp: llama_bin, vllm: vllm_slot_bin},
   # Container image the vllm-slot wrapper runs (vLLM hosts only; nil otherwise).
   vllm_image: vllm_image,

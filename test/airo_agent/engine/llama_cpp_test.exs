@@ -65,6 +65,55 @@ defmodule AiroAgent.Engine.LlamaCppTest do
     end
   end
 
+  describe "launch_spec/3 — reasoning-budget guard (runaway thinking)" do
+    # llama-server's own default is -1 (UNLIMITED): a reasoning trace that never
+    # closes </think> generates until the whole ctx fills. The agent caps it by
+    # default so a bare profile can't run away.
+    test "a bare profile gets the default budget cap" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{}, 8081)
+      assert arg_after(spec.argv, "--reasoning-budget") == "8192"
+    end
+
+    test "a profile's own budget wins over the guard" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{reasoning_budget: 24_576}, 8081)
+      assert arg_after(spec.argv, "--reasoning-budget") == "24576"
+    end
+
+    test "reasoning_budget: -1 opts back into unlimited (explicit, not silent)" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{reasoning_budget: -1}, 8081)
+      assert arg_after(spec.argv, "--reasoning-budget") == "-1"
+    end
+
+    test "disable_thinking suppresses the budget (no trace ⇒ nothing to cap)" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{disable_thinking: true}, 8081)
+      refute "--reasoning-budget" in spec.argv
+    end
+  end
+
+  describe "launch_spec/3 — repetition guard (DRY) and penalty passthrough" do
+    # DRY breaks degenerate repetition loops and is near-inert on normal text,
+    # so it defaults ON. --repeat-penalty taxes every token (hurts code), so it
+    # stays at the engine default (1.0, off) unless a profile asks.
+    test "a bare profile gets DRY at the default multiplier" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{}, 8081)
+      assert arg_after(spec.argv, "--dry-multiplier") == "0.8"
+      refute "--repeat-penalty" in spec.argv
+    end
+
+    test "a profile's own dry_multiplier wins; 0 disables explicitly" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{dry_multiplier: 0}, 8081)
+      assert arg_after(spec.argv, "--dry-multiplier") == "0"
+    end
+
+    test "classic penalties pass through when a profile sets them" do
+      profile = %{repeat_penalty: 1.1, presence_penalty: 1.5, frequency_penalty: 0.2}
+      {:ok, spec} = LlamaCpp.launch_spec(model(), profile, 8081)
+      assert arg_after(spec.argv, "--repeat-penalty") == "1.1"
+      assert arg_after(spec.argv, "--presence-penalty") == "1.5"
+      assert arg_after(spec.argv, "--frequency-penalty") == "0.2"
+    end
+  end
+
   describe "inventory/1 — vision projectors are not models" do
     setup do
       root = Path.join(System.tmp_dir!(), "airo_inv_#{System.unique_integer([:positive])}")

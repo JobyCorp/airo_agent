@@ -55,8 +55,12 @@ defmodule AiroAgent.Engine.LlamaCpp do
         flag("--parallel", profile[:parallel]) ++
         bool_flag("--jinja", profile[:jinja]) ++
         flag("--chat-template", profile[:chat_template]) ++
-        flag("--reasoning-budget", profile[:reasoning_budget]) ++
+        flag("--reasoning-budget", reasoning_budget(profile)) ++
         flag("--reasoning-format", profile[:reasoning_format]) ++
+        flag("--dry-multiplier", profile[:dry_multiplier]) ++
+        flag("--repeat-penalty", profile[:repeat_penalty]) ++
+        flag("--presence-penalty", profile[:presence_penalty]) ++
+        flag("--frequency-penalty", profile[:frequency_penalty]) ++
         thinking_flags(profile[:disable_thinking]) ++
         List.wrap(profile[:extra_argv])
 
@@ -93,6 +97,20 @@ defmodule AiroAgent.Engine.LlamaCpp do
       jinja: true,
       # MTP only when the GGUF actually ships an MTP head.
       spec_type: if(mtp?(model), do: "draft-mtp", else: nil),
+      # Runaway-thinking guard: llama-server's own default is -1 (UNLIMITED), so
+      # a reasoning loop that never closes </think> generates until the whole
+      # ctx fills. Cap it by default; on exhaustion the engine injects the
+      # end-of-thinking tag and the model answers — graceful, not a hard stop.
+      # A profile's own reasoning_budget wins (-1 opts back into unlimited);
+      # AIRO_LLAMA_REASONING_BUDGET tunes the host default.
+      reasoning_budget: Application.get_env(:airo_agent, :llama_cpp_reasoning_budget, 8192),
+      # Runaway-repetition guard: DRY sampling breaks degenerate loops (repeated
+      # sequences past the allowed length) while staying near-inert on normal
+      # text — unlike --repeat-penalty, which taxes every token and hurts
+      # code/structured output, so THAT stays off (engine default 1.0). These
+      # are engine-level DEFAULTS: a request that sends the sampler param still
+      # overrides. Profile 0 (or AIRO_LLAMA_DRY_MULTIPLIER=0) disables.
+      dry_multiplier: Application.get_env(:airo_agent, :llama_cpp_dry_multiplier, 0.8),
       ld_library_path: Application.get_env(:airo_agent, :llama_cpp_lib_path)
     }
   end
@@ -234,6 +252,11 @@ defmodule AiroAgent.Engine.LlamaCpp do
   # trace entirely; `--reasoning-budget 0` does NOT (it only caps the budget).
   defp thinking_flags(true), do: ["--reasoning", "off"]
   defp thinking_flags(_), do: []
+
+  # A budget is meaningless once the trace is skipped (`--reasoning off`);
+  # don't emit both.
+  defp reasoning_budget(%{disable_thinking: true}), do: nil
+  defp reasoning_budget(profile), do: profile[:reasoning_budget]
 
   defp flag(_k, nil), do: []
   defp flag(k, v), do: [k, to_string(v)]
