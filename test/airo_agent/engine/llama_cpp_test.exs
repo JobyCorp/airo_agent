@@ -91,18 +91,18 @@ defmodule AiroAgent.Engine.LlamaCppTest do
   end
 
   describe "launch_spec/3 — repetition guard (DRY) and penalty passthrough" do
-    # DRY breaks degenerate repetition loops and is near-inert on normal text,
-    # so it defaults ON. --repeat-penalty taxes every token (hurts code), so it
-    # stays at the engine default (1.0, off) unless a profile asks.
-    test "a bare profile gets DRY at the default multiplier" do
+    # All repetition knobs are OPT-IN: a bare profile changes no sampling
+    # defaults. DRY is the recommended loop guard (near-inert on normal text,
+    # unlike --repeat-penalty, which taxes every token and hurts code).
+    test "a bare profile sets no repetition flags" do
       {:ok, spec} = LlamaCpp.launch_spec(model(), %{}, 8081)
-      assert arg_after(spec.argv, "--dry-multiplier") == "0.8"
+      refute "--dry-multiplier" in spec.argv
       refute "--repeat-penalty" in spec.argv
     end
 
-    test "a profile's own dry_multiplier wins; 0 disables explicitly" do
-      {:ok, spec} = LlamaCpp.launch_spec(model(), %{dry_multiplier: 0}, 8081)
-      assert arg_after(spec.argv, "--dry-multiplier") == "0"
+    test "a profile's dry_multiplier enables DRY for that load" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{dry_multiplier: 0.8}, 8081)
+      assert arg_after(spec.argv, "--dry-multiplier") == "0.8"
     end
 
     test "classic penalties pass through when a profile sets them" do

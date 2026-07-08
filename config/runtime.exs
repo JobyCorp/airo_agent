@@ -17,13 +17,14 @@ llama_bin = System.get_env("LLAMA_SERVER_BIN") || "llama-server"
 llama_reasoning_budget =
   String.to_integer(System.get_env("AIRO_LLAMA_REASONING_BUDGET") || "8192")
 
-# Runaway-repetition guard: host default for llama-server's --dry-multiplier.
-# DRY breaks degenerate repetition loops and is near-inert on normal text; the
-# engine's own default is 0.0 (off). Per-request sampler params still override.
-# Set 0 to disable the guard host-wide.
+# Optional repetition guard: host default for llama-server's --dry-multiplier.
+# DRY breaks degenerate repetition loops and is near-inert on normal text. OFF
+# by default (0 ⇒ no flag emitted; the engine's own default is 0.0 anyway) —
+# set e.g. 0.8 to enable host-wide. A profile's dry_multiplier still wins, and
+# per-request sampler params override either.
 llama_dry_multiplier =
-  case Float.parse(System.get_env("AIRO_LLAMA_DRY_MULTIPLIER") || "0.8") do
-    {f, ""} -> f
+  case Float.parse(System.get_env("AIRO_LLAMA_DRY_MULTIPLIER") || "0") do
+    {f, ""} -> if f == 0.0, do: nil, else: f
     _ -> raise "AIRO_LLAMA_DRY_MULTIPLIER must be a number, e.g. 0.8"
   end
 

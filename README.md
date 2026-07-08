@@ -66,7 +66,7 @@ overrides).
 | `AIRO_SOCKET_URL` | — | Airo `/agent` socket; when set, the channel notifier connects and pushes state (else log-only). |
 | `AIRO_VLLM_EXTRA_ARGS` | — | Host-level vLLM tuning argv (e.g. `--enforce-eager --max-num-batched-tokens 2048` on a 16 GB card), used when a load profile has no `extra_argv` of its own. |
 | `AIRO_LLAMA_REASONING_BUDGET` | `8192` | Default `--reasoning-budget` (thinking-token cap) for llama.cpp loads that bring no `reasoning_budget` of their own — the runaway-thinking guard. `-1` disables the guard host-wide (the engine's unlimited default). |
-| `AIRO_LLAMA_DRY_MULTIPLIER` | `0.8` | Default `--dry-multiplier` for llama.cpp loads that bring no `dry_multiplier` of their own — the runaway-repetition guard (DRY breaks degenerate loops, near-inert on normal text). Per-request sampler params still override; `0` disables host-wide. |
+| `AIRO_LLAMA_DRY_MULTIPLIER` | `0` (off) | Optional repetition guard: default `--dry-multiplier` for llama.cpp loads that bring no `dry_multiplier` of their own (DRY breaks degenerate loops, near-inert on normal text). Set e.g. `0.8` to enable host-wide; per-request sampler params still override. |
 | `LLAMA_SERVER_BIN` | `llama-server` (PATH) | Engine binary. |
 | `LLAMA_CPP_LIB` | — | `LD_LIBRARY_PATH` for the engine (shared-lib builds). |
 

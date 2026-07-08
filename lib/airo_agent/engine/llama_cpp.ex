@@ -104,13 +104,13 @@ defmodule AiroAgent.Engine.LlamaCpp do
       # A profile's own reasoning_budget wins (-1 opts back into unlimited);
       # AIRO_LLAMA_REASONING_BUDGET tunes the host default.
       reasoning_budget: Application.get_env(:airo_agent, :llama_cpp_reasoning_budget, 8192),
-      # Runaway-repetition guard: DRY sampling breaks degenerate loops (repeated
-      # sequences past the allowed length) while staying near-inert on normal
-      # text — unlike --repeat-penalty, which taxes every token and hurts
-      # code/structured output, so THAT stays off (engine default 1.0). These
-      # are engine-level DEFAULTS: a request that sends the sampler param still
-      # overrides. Profile 0 (or AIRO_LLAMA_DRY_MULTIPLIER=0) disables.
-      dry_multiplier: Application.get_env(:airo_agent, :llama_cpp_dry_multiplier, 0.8),
+      # Optional repetition guard, OFF by default (nil ⇒ no flag; the engine's
+      # own default is 0.0). DRY breaks degenerate loops (repeated sequences
+      # past the allowed length) while staying near-inert on normal text —
+      # unlike --repeat-penalty, which taxes every token and hurts
+      # code/structured output. Enable host-wide via AIRO_LLAMA_DRY_MULTIPLIER
+      # or per-load via the profile; per-request sampler params still override.
+      dry_multiplier: Application.get_env(:airo_agent, :llama_cpp_dry_multiplier),
       ld_library_path: Application.get_env(:airo_agent, :llama_cpp_lib_path)
     }
   end
