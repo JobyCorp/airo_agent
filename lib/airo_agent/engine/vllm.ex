@@ -204,15 +204,19 @@ defmodule AiroAgent.Engine.Vllm do
   # e.g. images that bake `vllm serve` into ENTRYPOINT want entrypoint: "vllm"
   # + cmd_prefix: "" so `serve <dir> …` runs exactly once (see the vllm-slot
   # header). Emitted into the launch env, which overrides the host-level vars
-  # for this launch only. cmd_prefix: "" is meaningful (wrapper honors
-  # set-but-empty), hence reject only nil.
+  # for this launch only. NB an empty cmd_prefix crosses as the "none" sentinel:
+  # Erlang REMOVES env vars whose value is "" when spawning a port, so a literal
+  # empty string would silently revert the wrapper to its `vllm` default.
   defp wrapper_overrides(profile) do
     [
       {"AIRO_VLLM_ENTRYPOINT", profile[:entrypoint]},
-      {"AIRO_VLLM_CMD_PREFIX", profile[:cmd_prefix]}
+      {"AIRO_VLLM_CMD_PREFIX", cmd_prefix(profile[:cmd_prefix])}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
+
+  defp cmd_prefix(""), do: "none"
+  defp cmd_prefix(prefix), do: prefix
 
   @impl true
   def default_profile(%ModelRef{} = model) do

@@ -254,7 +254,8 @@ defmodule AiroAgent.Engine.VllmTest do
     test "profile entrypoint/cmd_prefix ride the launch env (empty cmd_prefix is meaningful)" do
       {:ok, spec} = Vllm.launch_spec(model(), %{entrypoint: "vllm", cmd_prefix: ""}, 8081)
       assert env_val(spec, "AIRO_VLLM_ENTRYPOINT") == "vllm"
-      assert env_val(spec, "AIRO_VLLM_CMD_PREFIX") == ""
+      # "" would be UNSET by Erlang's port env — it must cross as the "none" sentinel.
+      assert env_val(spec, "AIRO_VLLM_CMD_PREFIX") == "none"
 
       {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
       assert env_val(spec, "AIRO_VLLM_ENTRYPOINT") == :undefined

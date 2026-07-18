@@ -57,8 +57,11 @@ set -euo pipefail
 MODEL_ROOT="${AIRO_AGENT_MODEL_ROOT:-$HOME/.cache/huggingface/hub}"
 RT="${AIRO_CONTAINER_RUNTIME:-podman}"
 # `-` not `:-`: an explicitly empty AIRO_VLLM_CMD_PREFIX is honored (needed when
-# AIRO_VLLM_ENTRYPOINT=vllm already supplies the binary).
+# AIRO_VLLM_ENTRYPOINT=vllm already supplies the binary). The literal value
+# "none" also means empty — the agent can't send "" through the BEAM (Erlang
+# unsets empty env vars on port spawn), so profile cmd_prefix: "" arrives as it.
 CMD_PREFIX="${AIRO_VLLM_CMD_PREFIX-vllm}"
+[ "$CMD_PREFIX" = "none" ] && CMD_PREFIX=""
 
 # Optional ENTRYPOINT override (for images that bake `vllm serve` into ENTRYPOINT).
 entrypoint_args=()
