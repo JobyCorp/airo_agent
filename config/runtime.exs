@@ -50,6 +50,40 @@ vllm_extra_argv =
     args -> String.split(args, " ", trim: true)
   end
 
+# Two-host vLLM cluster (tensor parallelism across a pair of GPU hosts, e.g.
+# 2× DGX Spark over their 200G ConnectX link). Set on the HEAD host only; the
+# worker host runs no vllm slots of its own (its GPU belongs to the head's
+# cluster loads). A load opts in per-profile with nnodes: 2 — these vars only
+# describe the fabric. All three of WORKER_SSH / MASTER_IP / NCCL_IF must be
+# set for cluster loads to be accepted.
+vllm_cluster =
+  case {System.get_env("AIRO_VLLM_CLUSTER_WORKER_SSH"),
+        System.get_env("AIRO_VLLM_CLUSTER_MASTER_IP"),
+        System.get_env("AIRO_VLLM_CLUSTER_NCCL_IF")} do
+    {worker_ssh, master_ip, nccl_if}
+    when is_binary(worker_ssh) and is_binary(master_ip) and is_binary(nccl_if) ->
+      %{
+        # ssh target that reaches the worker (key auth, e.g. jody@192.168.100.11).
+        worker_ssh: worker_ssh,
+        # This host's fabric IP — the torch.distributed rendezvous address.
+        master_ip: master_ip,
+        # Worker's fabric IP (VLLM_HOST_IP for rank 1); defaults to the host
+        # part of worker_ssh.
+        worker_ip:
+          System.get_env("AIRO_VLLM_CLUSTER_WORKER_IP") ||
+            worker_ssh |> String.split("@") |> List.last(),
+        # NCCL/GLOO socket interface on BOTH hosts (e.g. enP2p1s0f1np1).
+        nccl_if: nccl_if,
+        # RDMA device for NCCL (e.g. roceP2p1s0f1); optional, NCCL autodetects.
+        nccl_hca: System.get_env("AIRO_VLLM_CLUSTER_NCCL_HCA"),
+        # RoCE v2 + IPv4 GID index (5 on DGX Spark — index 0 is a v1 MAC GID).
+        gid_index: System.get_env("AIRO_VLLM_CLUSTER_GID_INDEX")
+      }
+
+    _ ->
+      nil
+  end
+
 # Container runtime for container-based engines (vLLM). podman (default) | docker.
 # The vllm-slot wrapper reads the same env var; this exposes it to the agent for
 # the boot-time orphan sweep (see AiroAgent.Engine.Vllm.reap_orphans/0).
@@ -150,6 +184,8 @@ config :airo_agent,
   # Container image the vllm-slot wrapper runs (vLLM hosts only; nil otherwise).
   vllm_image: vllm_image,
   vllm_extra_argv: vllm_extra_argv,
+  # Two-host TP fabric (head host only; nil = cluster loads rejected).
+  vllm_cluster: vllm_cluster,
   container_runtime: container_runtime,
   # Engine adapters active on this host (per-host; see AIRO_AGENT_ENGINES above).
   engines: engines,

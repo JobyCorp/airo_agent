@@ -164,6 +164,104 @@ defmodule AiroAgent.Engine.VllmTest do
     end
   end
 
+  describe "launch_spec/3 — two-host tensor parallelism (nnodes)" do
+    @cluster %{
+      worker_ssh: "jody@192.168.100.11",
+      master_ip: "192.168.100.10",
+      worker_ip: "192.168.100.11",
+      nccl_if: "enP2p1s0f1np1",
+      nccl_hca: "roceP2p1s0f1",
+      gid_index: "5"
+    }
+
+    defp with_cluster do
+      Application.put_env(:airo_agent, :vllm_cluster, @cluster)
+      on_exit(fn -> Application.delete_env(:airo_agent, :vllm_cluster) end)
+    end
+
+    defp env_val(spec, key), do: :proplists.get_value(key, spec.env)
+
+    test "nnodes: 2 adds the mp multi-node rank-0 flags" do
+      with_cluster()
+      {:ok, spec} = Vllm.launch_spec(model(), %{nnodes: 2, tensor_parallel_size: 2}, 8899)
+
+      assert arg_after(spec.argv, "--nnodes") == "2"
+      assert arg_after(spec.argv, "--node-rank") == "0"
+      assert arg_after(spec.argv, "--master-addr") == "192.168.100.10"
+      # Rendezvous port derived from the slot port so two cluster slots never clash.
+      assert arg_after(spec.argv, "--master-port") == "18899"
+      assert arg_after(spec.argv, "--distributed-executor-backend") == "mp"
+      # Readiness is unchanged: rank 0's /health only turns 200 once both ranks are up.
+      assert spec.readiness == {:http_get, "/health"}
+    end
+
+    test "nnodes: 2 forwards the fabric env the wrapper needs for rank 1" do
+      with_cluster()
+      {:ok, spec} = Vllm.launch_spec(model(), %{nnodes: 2}, 8899)
+
+      assert env_val(spec, "AIRO_VLLM_CLUSTER") == "1"
+      assert env_val(spec, "AIRO_VLLM_WORKER_SSH") == "jody@192.168.100.11"
+      assert env_val(spec, "AIRO_VLLM_MASTER_IP") == "192.168.100.10"
+      assert env_val(spec, "AIRO_VLLM_WORKER_IP") == "192.168.100.11"
+      assert env_val(spec, "AIRO_VLLM_NCCL_IF") == "enP2p1s0f1np1"
+      assert env_val(spec, "AIRO_VLLM_NCCL_HCA") == "roceP2p1s0f1"
+      assert env_val(spec, "AIRO_VLLM_GID_INDEX") == "5"
+    end
+
+    test "a cluster load on an unconfigured host is rejected, not half-launched" do
+      assert {:error, :vllm_cluster_not_configured} =
+               Vllm.launch_spec(model(), %{nnodes: 2}, 8899)
+    end
+
+    test "no nnodes (or nnodes: 1) means no cluster flags and no cluster env" do
+      with_cluster()
+
+      for profile <- [%{}, %{nnodes: 1}] do
+        {:ok, spec} = Vllm.launch_spec(model(), profile, 8081)
+        refute "--nnodes" in spec.argv
+        refute "--distributed-executor-backend" in spec.argv
+        assert env_val(spec, "AIRO_VLLM_CLUSTER") == :undefined
+      end
+    end
+
+    test "a profile image overrides the host VLLM_IMAGE (cluster models ship their own)" do
+      Application.put_env(:airo_agent, :vllm_image, "nvcr.io/nvidia/vllm:26.04-py3")
+      on_exit(fn -> Application.delete_env(:airo_agent, :vllm_image) end)
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+      assert env_val(spec, "VLLM_IMAGE") == "nvcr.io/nvidia/vllm:26.04-py3"
+
+      {:ok, spec} =
+        Vllm.launch_spec(model(), %{image: "ghcr.io/anemll/dspark-vllm-gx10:0.1.1"}, 8081)
+
+      assert env_val(spec, "VLLM_IMAGE") == "ghcr.io/anemll/dspark-vllm-gx10:0.1.1"
+    end
+
+    test "container_env serializes to sorted newline K=V for the wrapper" do
+      {:ok, spec} =
+        Vllm.launch_spec(
+          model(),
+          %{container_env: %{"VLLM_USE_B12X_MOE" => "1", "NCCL_DEBUG" => "WARN"}},
+          8081
+        )
+
+      assert env_val(spec, "AIRO_VLLM_CONTAINER_ENV") == "NCCL_DEBUG=WARN\nVLLM_USE_B12X_MOE=1"
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+      assert env_val(spec, "AIRO_VLLM_CONTAINER_ENV") == :undefined
+    end
+
+    test "profile entrypoint/cmd_prefix ride the launch env (empty cmd_prefix is meaningful)" do
+      {:ok, spec} = Vllm.launch_spec(model(), %{entrypoint: "vllm", cmd_prefix: ""}, 8081)
+      assert env_val(spec, "AIRO_VLLM_ENTRYPOINT") == "vllm"
+      assert env_val(spec, "AIRO_VLLM_CMD_PREFIX") == ""
+
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+      assert env_val(spec, "AIRO_VLLM_ENTRYPOINT") == :undefined
+      assert env_val(spec, "AIRO_VLLM_CMD_PREFIX") == :undefined
+    end
+  end
+
   describe "tool_parser_for_template/1" do
     test "GLM-style <tool_call> with <arg_key> pairs is NOT hermes — no parser" do
       template = "<tool_call>{{ name }}\n<arg_key>k</arg_key><arg_value>v</arg_value>"

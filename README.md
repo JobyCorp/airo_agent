@@ -65,6 +65,12 @@ overrides).
 | `AIRO_AGENT_TOKEN` | — | Bearer token for the control API + channel join (optional; independent of exposure). |
 | `AIRO_SOCKET_URL` | — | Airo `/agent` socket; when set, the channel notifier connects and pushes state (else log-only). |
 | `AIRO_VLLM_EXTRA_ARGS` | — | Host-level vLLM tuning argv (e.g. `--enforce-eager --max-num-batched-tokens 2048` on a 16 GB card), used when a load profile has no `extra_argv` of its own. |
+| `AIRO_VLLM_CLUSTER_WORKER_SSH` | — | Two-host TP (head host only): ssh target for the worker GPU host (key auth), e.g. `jody@192.168.100.11`. Set together with `_MASTER_IP` + `_NCCL_IF` to accept `nnodes: 2` loads. |
+| `AIRO_VLLM_CLUSTER_MASTER_IP` | — | Head's fabric IP (torch.distributed rendezvous + rank-0 `VLLM_HOST_IP`). |
+| `AIRO_VLLM_CLUSTER_WORKER_IP` | host part of `WORKER_SSH` | Worker's fabric IP (rank-1 `VLLM_HOST_IP`). |
+| `AIRO_VLLM_CLUSTER_NCCL_IF` | — | NCCL/GLOO socket interface on both hosts (e.g. `enP2p1s0f1np1`). |
+| `AIRO_VLLM_CLUSTER_NCCL_HCA` | — | RDMA device for `NCCL_IB_HCA` (e.g. `roceP2p1s0f1`; optional). |
+| `AIRO_VLLM_CLUSTER_GID_INDEX` | — | `NCCL_IB_GID_INDEX` — must be the RoCE v2 + IPv4 GID (5 on DGX Spark; optional). |
 | `AIRO_LLAMA_REASONING_BUDGET` | `8192` | Default `--reasoning-budget` (thinking-token cap) for llama.cpp loads that bring no `reasoning_budget` of their own — the runaway-thinking guard. `-1` disables the guard host-wide (the engine's unlimited default). |
 | `AIRO_LLAMA_DRY_MULTIPLIER` | `0` (off) | Optional repetition guard: default `--dry-multiplier` for llama.cpp loads that bring no `dry_multiplier` of their own (DRY breaks degenerate loops, near-inert on normal text). Set e.g. `0.8` to enable host-wide; per-request sampler params still override. |
 | `LLAMA_SERVER_BIN` | `llama-server` (PATH) | Engine binary. |

@@ -239,6 +239,53 @@ arm64 ERTS — qemu never faces a heavy native compile. On the build host (a Ryz
   vLLM ctx semantics in `SlotInfo`; unified-memory budget reported to Airo with
   headroom.
 
+## Multi-node TP: two Sparks, one slot (validated 2026-07-18)
+
+Two DGX Sparks cabled back-to-back over their ConnectX-7 200G ports serve ONE
+model with `--tensor-parallel-size 2` — the capacity tier for models that don't
+fit a single 121 GB pool (validated with Qwen3.5-122B NVFP4 on the stock NGC
+image, then DeepSeek-V4-Flash-DSpark 156 G / 1M ctx on a community image).
+
+**No Ray.** The NGC vLLM images ship no Ray; vLLM ≥0.19 has native mp-backend
+multi-node (`--nnodes/--node-rank/--master-addr/--master-port`, worker runs
+`--headless`). That is also the better architectural fit: each host runs one
+plain `vllm serve` process — exactly the shape `Instance`/muontrap supervises.
+
+**Topology: the head owns the cluster slot.** The agent on the head host
+launches rank 0 (the API node) as a normal slot; the `vllm-slot` wrapper ALSO
+starts rank 1 on the worker over SSH and tears both down together (trap on
+TERM/exit; boot-time `reap_orphans` sweeps the worker too for the SIGKILL
+case). The worker host's own agent serves no vllm slots — its GPU belongs to
+the head's cluster loads. Fleet, Instance, readiness, and the channel are all
+untouched: rank 0's `/health` only returns 200 once the whole world is up, and
+either rank dying collapses the mp process group → one supervised child exits →
+the normal `:down`/`:failed` path.
+
+Mechanics:
+
+- **Opt-in per load**: `profile.nnodes: 2` (+ `tensor_parallel_size: 2`).
+  Without the host fabric config, such a load is rejected
+  (`:vllm_cluster_not_configured`) — never half-launched.
+- **Host fabric config** (head only): `AIRO_VLLM_CLUSTER_WORKER_SSH`,
+  `_MASTER_IP`, `_WORKER_IP`, `_NCCL_IF`, `_NCCL_HCA`, `_GID_INDEX` →
+  `:vllm_cluster`. NB the GID index must be the RoCE **v2 + IPv4** entry
+  (index 5 on Spark; index 0 is a v1 MAC GID — a config landmine).
+- **Rank 1 = rank 0's argv** with `--node-rank` flipped and `--headless`
+  appended (engine-shape args must match across ranks; API-only flags are
+  inert under `--headless`). Cluster containers run `--network host` +
+  `/dev/infiniband` (NCCL rendezvous + RoCE); the rendezvous port is
+  slot port + 10 000.
+- **Per-profile `image` + `container_env`**: cluster-scale models often need a
+  purpose-built image (e.g. DSpark speculative decoding) and a raft of engine
+  env switches; both ride the profile so Airo owns them per Deployment.
+- **Weights must exist at the same snapshot path on BOTH hosts** (each rank
+  loads from local disk). Sync is host bootstrap (rsync over the 200G link);
+  the wrapper pre-checks and fails fast with a legible error instead of a
+  cryptic NCCL timeout. The revision sha makes the sync verifiable.
+
+Out of scope for now: agent-managed weight sync to the worker, pooled
+(~240 GB) capacity reporting to Airo, >2 nodes.
+
 ## Out of scope (and who owns it)
 
 - **Model acquisition** (HF download to the cache) — host bootstrap, as today.
@@ -246,5 +293,6 @@ arm64 ERTS — qemu never faces a heavy native compile. On the build host (a Ryz
   bootstrap.
 - **Airo's placement policy for unified memory** — Airo-side; this doc only makes
   the agent *report* a usable budget.
-- **Tensor-parallel across multiple GB10s** — single-host TP only for now.
+- ~~**Tensor-parallel across multiple GB10s** — single-host TP only for now.~~
+  Landed: see *Multi-node TP* above.
 - **TGI** — drops into the same seam later; nothing here blocks it.

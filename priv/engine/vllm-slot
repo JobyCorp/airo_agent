@@ -32,9 +32,25 @@
 #   AIRO_VLLM_RUN_ARGS       extra runtime args (default: --ipc=host + raised
 #                            memlock/stack ulimits — vLLM needs host shared memory;
 #                            the proven sparky container runs with --ipc=host)
+#   AIRO_VLLM_CONTAINER_ENV  newline-separated K=V pairs added as -e flags (from
+#                            the profile's container_env — both ranks in cluster mode)
 #
-# Phase 1 first cut. Phase 2 hardens (SIGTERM→stop trap instead of exec, CDI
-# validation on GB10, crash reconcile, runtime_props scrape).
+# Cluster mode (AIRO_VLLM_CLUSTER=1, set by the adapter when profile.nnodes > 1):
+# this process runs rank 0 locally AND rank 1 on the worker host over SSH, so
+# both ranks share one supervised lifetime — either rank dying (or an unload's
+# SIGTERM) tears down both. The argv already carries the mp multi-node flags for
+# rank 0; rank 1 is the SAME argv with --node-rank flipped and --headless
+# appended (engine-shape args must match across ranks; API-only flags are inert
+# under --headless). Both ranks run --network host (NCCL/rendezvous need real
+# host networking) with /dev/infiniband passed through for RoCE.
+#   AIRO_VLLM_WORKER_SSH     required — ssh target for the worker (key auth)
+#   AIRO_VLLM_MASTER_IP      required — this host's fabric IP (VLLM_HOST_IP, rank 0)
+#   AIRO_VLLM_WORKER_IP      worker's fabric IP (VLLM_HOST_IP, rank 1)
+#   AIRO_VLLM_NCCL_IF        required — NCCL/GLOO socket interface on both hosts
+#   AIRO_VLLM_NCCL_HCA       RDMA device for NCCL_IB_HCA (optional)
+#   AIRO_VLLM_GID_INDEX      NCCL_IB_GID_INDEX (optional; RoCE v2+IPv4 GID)
+# Assumes: same container runtime + image pre-seeded on the worker, and the
+# model snapshot synced to the same path there (checked; fails fast if missing).
 set -euo pipefail
 
 : "${VLLM_IMAGE:?set VLLM_IMAGE to a vLLM OpenAI-server image}"
@@ -68,20 +84,108 @@ name="airo-slot-${port:-vllm}"
 port_args=()
 [ -n "$port" ] && port_args=(-p "${port}:${port}")
 
+# Profile-supplied in-container env (newline-separated K=V → -e flags).
+env_args=()
+if [ -n "${AIRO_VLLM_CONTAINER_ENV:-}" ]; then
+  while IFS= read -r kv; do
+    [ -n "$kv" ] && env_args+=(-e "$kv")
+  done <<<"$AIRO_VLLM_CONTAINER_ENV"
+fi
+
 # vLLM needs host IPC (shared memory) + raised locked-memory/stack ulimits.
 read -r -a vllm_run_args <<<"${AIRO_VLLM_RUN_ARGS:---ipc=host --ulimit memlock=-1 --ulimit stack=67108864}"
 
 # Idempotent: clear any stale container holding this slot before (re)launching.
 "$RT" rm -f "$name" >/dev/null 2>&1 || true
 
-# Replace this process with the runtime so muontrap supervises it directly. The
-# image entrypoint (e.g. NGC's nvidia_entrypoint.sh) execs `${CMD_PREFIX} "$@"`,
-# i.e. `vllm serve <dir> …`.
-exec "$RT" run --rm --name "$name" \
+if [ "${AIRO_VLLM_CLUSTER:-0}" != "1" ]; then
+  # Replace this process with the runtime so muontrap supervises it directly. The
+  # image entrypoint (e.g. NGC's nvidia_entrypoint.sh) execs `${CMD_PREFIX} "$@"`,
+  # i.e. `vllm serve <dir> …`.
+  exec "$RT" run --rm --name "$name" \
+    "${gpu_args[@]}" \
+    "${entrypoint_args[@]}" \
+    "${vllm_run_args[@]}" \
+    -e HF_HUB_OFFLINE=1 \
+    "${env_args[@]}" \
+    -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
+    "${port_args[@]}" \
+    "$VLLM_IMAGE" $CMD_PREFIX "$@"
+fi
+
+# ---------------- cluster mode: rank 0 here, rank 1 over SSH ----------------
+
+: "${AIRO_VLLM_WORKER_SSH:?cluster mode needs AIRO_VLLM_WORKER_SSH}"
+: "${AIRO_VLLM_MASTER_IP:?cluster mode needs AIRO_VLLM_MASTER_IP}"
+: "${AIRO_VLLM_NCCL_IF:?cluster mode needs AIRO_VLLM_NCCL_IF}"
+
+SSH=(ssh -o BatchMode=yes "$AIRO_VLLM_WORKER_SSH")
+
+# Each rank loads weights from local disk — fail fast (and legibly) if the
+# snapshot was never synced to the worker, instead of a cryptic NCCL timeout.
+model_dir=""
+[ "${1:-}" = "serve" ] && model_dir="${2:-}"
+if [ -n "$model_dir" ] && ! "${SSH[@]}" "test -d $(printf '%q' "$model_dir")"; then
+  echo "vllm-slot: model snapshot missing on worker ($AIRO_VLLM_WORKER_SSH): $model_dir" >&2
+  echo "vllm-slot: sync it first, e.g. rsync -a <repo-dir> worker:<model-root>/" >&2
+  exit 78
+fi
+
+# Rank 1 = same argv, --node-rank flipped to 1, --headless appended.
+worker_args=()
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--node-rank" ]; then worker_args+=(1); else worker_args+=("$a"); fi
+  prev="$a"
+done
+worker_args+=(--headless)
+
+nccl_env=(-e "NCCL_SOCKET_IFNAME=$AIRO_VLLM_NCCL_IF" -e "GLOO_SOCKET_IFNAME=$AIRO_VLLM_NCCL_IF")
+[ -n "${AIRO_VLLM_NCCL_HCA:-}" ] && nccl_env+=(-e "NCCL_IB_HCA=$AIRO_VLLM_NCCL_HCA")
+[ -n "${AIRO_VLLM_GID_INDEX:-}" ] && nccl_env+=(-e "NCCL_IB_GID_INDEX=$AIRO_VLLM_GID_INDEX")
+
+# Host networking (no -p mapping: vLLM binds the slot port itself) + RoCE device.
+cluster_run_args=(--network host --device /dev/infiniband --ulimit nofile=1048576:1048576)
+
+cleanup() {
+  "$RT" rm -f "$name" >/dev/null 2>&1 || true
+  "${SSH[@]}" "$RT rm -f $name" >/dev/null 2>&1 || true
+}
+# TERM/INT (unload, swap, agent drain) and normal exit (either rank died) both
+# tear down BOTH ranks — a half-alive cluster engine is never left behind.
+trap 'cleanup; exit 143' TERM INT
+trap cleanup EXIT
+
+# Clear a stale rank-1 holding the name on the worker, then launch it.
+"${SSH[@]}" "$RT rm -f $name" >/dev/null 2>&1 || true
+
+remote_cmd=("$RT" run --rm --name "$name"
+  "${gpu_args[@]}"
+  "${entrypoint_args[@]}"
+  "${vllm_run_args[@]}"
+  "${cluster_run_args[@]}"
+  -e HF_HUB_OFFLINE=1
+  "${nccl_env[@]}"
+  -e "VLLM_HOST_IP=${AIRO_VLLM_WORKER_IP:-}"
+  "${env_args[@]}"
+  -v "${MODEL_ROOT}:${MODEL_ROOT}:ro"
+  "$VLLM_IMAGE")
+[ -n "$CMD_PREFIX" ] && remote_cmd+=("$CMD_PREFIX")
+remote_cmd+=("${worker_args[@]}")
+
+"${SSH[@]}" "$(printf '%q ' "${remote_cmd[@]}")" &
+
+# Rank 0 in the background + wait (no exec: the EXIT trap must outlive it to
+# reap rank 1). Exit status is rank 0's, so Fleet still sees the real reason.
+"$RT" run --rm --name "$name" \
   "${gpu_args[@]}" \
   "${entrypoint_args[@]}" \
   "${vllm_run_args[@]}" \
+  "${cluster_run_args[@]}" \
   -e HF_HUB_OFFLINE=1 \
+  "${nccl_env[@]}" \
+  -e "VLLM_HOST_IP=$AIRO_VLLM_MASTER_IP" \
+  "${env_args[@]}" \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
-  "${port_args[@]}" \
-  "$VLLM_IMAGE" $CMD_PREFIX "$@"
+  "$VLLM_IMAGE" $CMD_PREFIX "$@" &
+wait $!

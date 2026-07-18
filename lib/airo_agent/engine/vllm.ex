@@ -46,6 +46,14 @@ defmodule AiroAgent.Engine.Vllm do
   NB unified memory: on a DGX Spark `--gpu-memory-utilization` is a fraction of
   the *shared* ~120 GB pool, so it's left unset by default (vLLM's own default)
   rather than guessed; Airo sets it per Deployment once validated on the box.
+
+  **Two-host tensor parallelism** (`profile.nnodes: 2`): rank 0 launches here
+  with vLLM's native mp multi-node flags; the wrapper runs rank 1 on the
+  configured cluster worker over SSH (see `cluster_launch/2` and
+  `DESIGN-vllm.md` § multi-node). Requires the `:vllm_cluster` host config
+  (`AIRO_VLLM_CLUSTER_*` env) and the model snapshot pre-synced to the same
+  path on the worker. Profiles may also carry `image` (per-deployment container
+  image override) and `container_env` (extra in-container env, both ranks).
   """
   @behaviour AiroAgent.Engine
 
@@ -78,45 +86,132 @@ defmodule AiroAgent.Engine.Vllm do
     profile = resolve_profile(model, profile)
     host = Application.get_env(:airo_agent, :engine_bind_host, "127.0.0.1")
 
-    # --max-model-len IS the per-request window — NO ×parallel (vLLM owns the
-    # paged-KV budget internally). Contrast llama.cpp's contract A.
-    argv =
-      [
-        "serve",
-        dir,
-        # Advertise the id Airo routes on, not the snapshot path.
-        "--served-model-name",
-        model.id,
-        "--host",
-        host,
-        "--port",
-        Integer.to_string(port)
-      ] ++
-        flag("--max-model-len", profile[:ctx]) ++
-        flag("--max-num-seqs", profile[:parallel]) ++
-        flag("--tensor-parallel-size", profile[:tensor_parallel_size]) ++
-        flag("--gpu-memory-utilization", profile[:gpu_memory_utilization]) ++
-        flag("--dtype", profile[:dtype]) ++
-        flag("--quantization", profile[:quantization]) ++
-        flag("--kv-cache-dtype", profile[:kv_cache_dtype]) ++
-        bool_flag("--trust-remote-code", profile[:trust_remote_code]) ++
-        thinking_flags(profile[:disable_thinking]) ++
-        tool_flags(model, profile) ++
-        List.wrap(profile[:extra_argv])
+    with {:ok, cluster_argv, cluster_env} <- cluster_launch(profile, port) do
+      # --max-model-len IS the per-request window — NO ×parallel (vLLM owns the
+      # paged-KV budget internally). Contrast llama.cpp's contract A.
+      argv =
+        [
+          "serve",
+          dir,
+          # Advertise the id Airo routes on, not the snapshot path.
+          "--served-model-name",
+          model.id,
+          "--host",
+          host,
+          "--port",
+          Integer.to_string(port)
+        ] ++
+          flag("--max-model-len", profile[:ctx]) ++
+          flag("--max-num-seqs", profile[:parallel]) ++
+          flag("--tensor-parallel-size", profile[:tensor_parallel_size]) ++
+          flag("--gpu-memory-utilization", profile[:gpu_memory_utilization]) ++
+          flag("--dtype", profile[:dtype]) ++
+          flag("--quantization", profile[:quantization]) ++
+          flag("--kv-cache-dtype", profile[:kv_cache_dtype]) ++
+          bool_flag("--trust-remote-code", profile[:trust_remote_code]) ++
+          thinking_flags(profile[:disable_thinking]) ++
+          tool_flags(model, profile) ++
+          cluster_argv ++
+          List.wrap(profile[:extra_argv])
 
-    spec = %{
-      argv: Enum.map(argv, &to_string/1),
-      # The vllm-slot wrapper reads these to build the podman run (image to use,
-      # cache dir to mount). Forwarded explicitly so it can't depend on whatever
-      # env the agent happened to inherit.
-      env: [
-        {"VLLM_IMAGE", Application.get_env(:airo_agent, :vllm_image) || ""},
-        {"AIRO_AGENT_MODEL_ROOT", model_root()}
-      ],
-      readiness: {:http_get, "/health"}
-    }
+      spec = %{
+        argv: Enum.map(argv, &to_string/1),
+        # The vllm-slot wrapper reads these to build the podman run (image to use,
+        # cache dir to mount). Forwarded explicitly so it can't depend on whatever
+        # env the agent happened to inherit. A profile image overrides the host
+        # image — cluster models often need a purpose-built one (e.g. DSpark).
+        env:
+          [
+            {"VLLM_IMAGE",
+             profile[:image] || Application.get_env(:airo_agent, :vllm_image) || ""},
+            {"AIRO_AGENT_MODEL_ROOT", model_root()}
+          ] ++ cluster_env ++ container_env_pairs(profile) ++ wrapper_overrides(profile),
+        readiness: {:http_get, "/health"}
+      }
 
-    {:ok, spec}
+      {:ok, spec}
+    end
+  end
+
+  # --- two-host tensor parallelism (nnodes: 2) ---
+
+  # A profile with nnodes > 1 spans this host and the configured cluster worker
+  # via vLLM's native mp multi-node backend (no Ray): rank 0 (the API node)
+  # launches here; the vllm-slot wrapper derives rank 1 from the SAME argv
+  # (--node-rank flipped, --headless appended — engine-shape args must match
+  # across ranks) and runs it on the worker over SSH, so both ranks live and die
+  # with the one supervised wrapper process. Fleet/Instance are none the wiser:
+  # readiness stays `GET /health` on rank 0, which only turns 200 once the whole
+  # world is up. The rendezvous port is slot port + 10_000 so two cluster slots
+  # can never share one.
+  defp cluster_launch(profile, port) do
+    case {profile[:nnodes], Application.get_env(:airo_agent, :vllm_cluster)} do
+      {n, _} when not is_integer(n) or n <= 1 ->
+        {:ok, [], []}
+
+      {_n, nil} ->
+        {:error, :vllm_cluster_not_configured}
+
+      {n, cluster} ->
+        argv = [
+          "--nnodes",
+          n,
+          "--node-rank",
+          0,
+          "--master-addr",
+          cluster.master_ip,
+          "--master-port",
+          port + 10_000,
+          "--distributed-executor-backend",
+          "mp"
+        ]
+
+        {:ok, argv, cluster_env(cluster)}
+    end
+  end
+
+  # Fabric facts the vllm-slot wrapper needs to place rank 1 and pin NCCL to the
+  # cluster link (empty string = unset; the wrapper skips blank optionals).
+  defp cluster_env(cluster) do
+    [
+      {"AIRO_VLLM_CLUSTER", "1"},
+      {"AIRO_VLLM_WORKER_SSH", cluster.worker_ssh},
+      {"AIRO_VLLM_MASTER_IP", cluster.master_ip},
+      {"AIRO_VLLM_WORKER_IP", Map.get(cluster, :worker_ip) || ""},
+      {"AIRO_VLLM_NCCL_IF", cluster.nccl_if},
+      {"AIRO_VLLM_NCCL_HCA", Map.get(cluster, :nccl_hca) || ""},
+      {"AIRO_VLLM_GID_INDEX", Map.get(cluster, :gid_index) || ""}
+    ]
+  end
+
+  # Model-specific in-container env (e.g. DSpark's VLLM_USE_B12X_* switches),
+  # newline-joined K=V; the wrapper expands each line into a -e flag on both
+  # ranks. Sorted for a deterministic argv (profile equality drives Fleet's
+  # idempotent-load check).
+  defp container_env_pairs(%{container_env: env}) when is_map(env) and map_size(env) > 0 do
+    joined =
+      env
+      |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
+      |> Enum.sort()
+      |> Enum.join("\n")
+
+    [{"AIRO_VLLM_CONTAINER_ENV", joined}]
+  end
+
+  defp container_env_pairs(_profile), do: []
+
+  # A profile image may need different wrapper plumbing than the host default —
+  # e.g. images that bake `vllm serve` into ENTRYPOINT want entrypoint: "vllm"
+  # + cmd_prefix: "" so `serve <dir> …` runs exactly once (see the vllm-slot
+  # header). Emitted into the launch env, which overrides the host-level vars
+  # for this launch only. cmd_prefix: "" is meaningful (wrapper honors
+  # set-but-empty), hence reject only nil.
+  defp wrapper_overrides(profile) do
+    [
+      {"AIRO_VLLM_ENTRYPOINT", profile[:entrypoint]},
+      {"AIRO_VLLM_CMD_PREFIX", profile[:cmd_prefix]}
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
 
   @impl true
@@ -289,9 +384,34 @@ defmodule AiroAgent.Engine.Vllm do
       Logger.info("vllm: reaped #{length(ids)} orphan slot container(s) via #{rt}")
     end
 
-    :ok
+    reap_worker_orphans(rt)
   rescue
     # runtime binary missing / unexpected output — nothing to reap, never fatal.
+    _ -> :ok
+  end
+
+  # A hard-killed agent (SIGKILL skips the wrapper's trap) can orphan a cluster
+  # load's rank-1 container on the worker host. Sweep it over the same SSH seam
+  # the wrapper uses. Assumes the worker runs the same container runtime.
+  defp reap_worker_orphans(rt) do
+    with %{worker_ssh: worker} <- Application.get_env(:airo_agent, :vllm_cluster),
+         {out, 0} <-
+           System.cmd(
+             "ssh",
+             ["-o", "BatchMode=yes", worker, "#{rt} ps -aq --filter name=airo-slot-"],
+             stderr_to_stdout: true
+           ),
+         [_ | _] = ids <- orphan_ids(out) do
+      System.cmd("ssh", ["-o", "BatchMode=yes", worker, "#{rt} rm -f #{Enum.join(ids, " ")}"],
+        stderr_to_stdout: true
+      )
+
+      Logger.info("vllm: reaped #{length(ids)} orphan worker container(s) on #{worker}")
+      :ok
+    else
+      _ -> :ok
+    end
+  rescue
     _ -> :ok
   end
 
