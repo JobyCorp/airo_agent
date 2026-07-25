@@ -239,8 +239,13 @@ defmodule AiroAgent.Fleet do
   defp configured_slots, do: Application.get_env(:airo_agent, :slots, [])
 
   # Poll until the (just-freed) port stops accepting connections, so a swap can
-  # rebind it. No-op when nothing is listening (e.g. test fakes).
-  defp await_port_free(port, tries \\ 30)
+  # rebind it. No-op when nothing is listening (e.g. test fakes). The default
+  # ceiling tracks Instance's SIGTERM→SIGKILL grace (30 s): a gracefully-exiting
+  # engine may hold the port for several seconds before the hard kill lands.
+  # Env-tunable so tests (fakes never free a really-occupied port) stay fast.
+  defp await_port_free(port),
+    do: await_port_free(port, Application.get_env(:airo_agent, :port_free_tries, 150))
+
   defp await_port_free(_port, 0), do: :ok
 
   defp await_port_free(port, tries) do

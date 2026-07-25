@@ -12,6 +12,9 @@ defmodule AiroAgent.FleetTest do
     Application.put_env(:airo_agent, :instance_module, FakeInstance)
     Application.put_env(:airo_agent, :notifier, AiroAgent.Test.Notifier)
     Application.put_env(:airo_agent, :test_notifier_pid, self())
+    # Fakes never bind the slot port, but a real engine on the dev box might be
+    # listening there — don't let a swap poll it for the full 30 s ceiling.
+    Application.put_env(:airo_agent, :port_free_tries, 1)
 
     on_exit(fn ->
       # Silence first so teardown engine deaths don't reach the next test's pid.
@@ -22,6 +25,7 @@ defmodule AiroAgent.FleetTest do
       end
 
       Application.delete_env(:airo_agent, :instance_module)
+      Application.delete_env(:airo_agent, :port_free_tries)
       Application.put_env(:airo_agent, :notifier, AiroAgent.Notifier.Log)
     end)
 

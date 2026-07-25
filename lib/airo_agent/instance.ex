@@ -14,6 +14,14 @@ defmodule AiroAgent.Instance do
 
   alias AiroAgent.{Engine, Fleet, ModelRef}
 
+  # SIGTERM→SIGKILL grace for the engine process. muontrap's 500 ms default is
+  # far too short for the teardown work SIGTERM triggers: a cluster unload's
+  # vllm-slot TERM trap must docker-rm rank 0 AND reach the worker over SSH to
+  # rm rank 1 (else the second host keeps serving), and even a single-node
+  # docker stop needs the client to outlive the container's graceful exit.
+  # This is a ceiling, not a sleep — a fast-exiting engine reaps immediately.
+  @delay_to_sigkill 30_000
+
   def start_link(spec), do: GenServer.start_link(__MODULE__, spec)
 
   @impl true
@@ -23,7 +31,11 @@ defmodule AiroAgent.Instance do
 
     with {:ok, launch} <- adapter.launch_spec(model, profile, port),
          bin <- bin_for(model.engine),
-         {:ok, daemon} <- MuonTrap.Daemon.start_link(bin, launch.argv, env: launch.env) do
+         {:ok, daemon} <-
+           MuonTrap.Daemon.start_link(bin, launch.argv,
+             env: launch.env,
+             delay_to_sigkill: @delay_to_sigkill
+           ) do
       schedule_readiness()
 
       {:ok,
