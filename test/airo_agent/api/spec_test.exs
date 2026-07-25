@@ -12,6 +12,17 @@ defmodule AiroAgent.Api.SpecTest do
              ~w(/gpu /health /inventory /inventory/refresh /load /slots /unload)
   end
 
+  # Every sampler knob the llama.cpp engine reads from a profile must be in the
+  # POST /load allowlist — a missing key is silently dropped by atomize_profile,
+  # so the UI field looks wired but never reaches the engine (the original
+  # penalty-passthrough bug).
+  test "the /load allowlist accepts every sampler profile key" do
+    for key <-
+          ~w(temperature top_p repeat_penalty presence_penalty frequency_penalty dry_multiplier) do
+      assert key in Router.profile_keys(), "#{key} missing from @profile_keys"
+    end
+  end
+
   test "GET /openapi serves the spec as JSON" do
     conn = Router.call(conn(:get, "/openapi"), Router.init([]))
 

@@ -58,6 +58,8 @@ defmodule AiroAgent.Engine.LlamaCpp do
         flag("--reasoning-budget", reasoning_budget(profile)) ++
         flag("--reasoning-format", profile[:reasoning_format]) ++
         flag("--dry-multiplier", profile[:dry_multiplier]) ++
+        flag("--temp", profile[:temperature]) ++
+        flag("--top-p", profile[:top_p]) ++
         flag("--repeat-penalty", profile[:repeat_penalty]) ++
         flag("--presence-penalty", profile[:presence_penalty]) ++
         flag("--frequency-penalty", profile[:frequency_penalty]) ++

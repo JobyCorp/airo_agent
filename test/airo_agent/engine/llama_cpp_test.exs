@@ -94,10 +94,12 @@ defmodule AiroAgent.Engine.LlamaCppTest do
     # All repetition knobs are OPT-IN: a bare profile changes no sampling
     # defaults. DRY is the recommended loop guard (near-inert on normal text,
     # unlike --repeat-penalty, which taxes every token and hurts code).
-    test "a bare profile sets no repetition flags" do
+    test "a bare profile sets no repetition or sampler flags" do
       {:ok, spec} = LlamaCpp.launch_spec(model(), %{}, 8081)
       refute "--dry-multiplier" in spec.argv
       refute "--repeat-penalty" in spec.argv
+      refute "--temp" in spec.argv
+      refute "--top-p" in spec.argv
     end
 
     test "a profile's dry_multiplier enables DRY for that load" do
@@ -111,6 +113,12 @@ defmodule AiroAgent.Engine.LlamaCppTest do
       assert arg_after(spec.argv, "--repeat-penalty") == "1.1"
       assert arg_after(spec.argv, "--presence-penalty") == "1.5"
       assert arg_after(spec.argv, "--frequency-penalty") == "0.2"
+    end
+
+    test "temperature and top_p pass through when a profile sets them" do
+      {:ok, spec} = LlamaCpp.launch_spec(model(), %{temperature: 0.7, top_p: 0.8}, 8081)
+      assert arg_after(spec.argv, "--temp") == "0.7"
+      assert arg_after(spec.argv, "--top-p") == "0.8"
     end
   end
 

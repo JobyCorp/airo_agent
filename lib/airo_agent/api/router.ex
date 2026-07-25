@@ -35,6 +35,8 @@ defmodule AiroAgent.Api.Router do
   # are shared; the rest are engine-specific knobs the adapter understands.
   @profile_keys ~w(
     ctx parallel extra_argv disable_thinking
+    temperature top_p repeat_penalty presence_penalty frequency_penalty
+    dry_multiplier
     ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type jinja
     chat_template reasoning_budget reasoning_format ld_library_path
     tensor_parallel_size gpu_memory_utilization dtype quantization
@@ -107,6 +109,9 @@ defmodule AiroAgent.Api.Router do
     |> Map.from_struct()
     |> Map.update!(:capabilities, &Enum.map(&1, fn c -> to_string(c) end))
   end
+
+  @doc "Launch-profile keys accepted by POST /load — a key an engine reads but this list omits is silently dropped."
+  def profile_keys, do: @profile_keys
 
   defp atomize_profile(map) when is_map(map) do
     for {k, v} <- map, k in @profile_keys, into: %{}, do: {String.to_atom(k), v}
