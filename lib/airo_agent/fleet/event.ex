@@ -22,6 +22,9 @@ defmodule AiroAgent.Fleet.Event do
           parallel: pos_integer() | nil,
           ctx_total: pos_integer() | nil,
           engine_build: String.t() | nil,
+          cluster_id: String.t() | nil,
+          tp_rank: non_neg_integer() | nil,
+          tp_size: pos_integer() | nil,
           reason: term() | nil,
           at: DateTime.t()
         }
@@ -36,6 +39,11 @@ defmodule AiroAgent.Fleet.Event do
     :parallel,
     :ctx_total,
     :engine_build,
+    # Multi-node identity, so a peer rank's transition reaches Airo as a push
+    # rather than waiting for the next register heartbeat.
+    :cluster_id,
+    :tp_rank,
+    :tp_size,
     :reason,
     :at
   ]

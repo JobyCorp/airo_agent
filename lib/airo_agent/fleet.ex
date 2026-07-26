@@ -17,7 +17,7 @@ defmodule AiroAgent.Fleet do
   use GenServer
   require Logger
 
-  alias AiroAgent.{Instances, ModelRef, Notifier, SlotInfo}
+  alias AiroAgent.{Engine, Instances, ModelRef, Notifier, PeerRanks, SlotInfo}
   alias AiroAgent.Fleet.Event
 
   def start_link(_), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
@@ -45,6 +45,34 @@ defmodule AiroAgent.Fleet do
 
   @impl true
   def handle_call({:load, %ModelRef{} = model, port, profile}, _from, state) do
+    cond do
+      # A rank of someone else's multi-node load is on this port. It isn't ours to
+      # evict, and its GPU is already committed — loading here would OOM late.
+      PeerRanks.held?(port) ->
+        {:reply, {:error, :peer_rank_resident}, state}
+
+      true ->
+        do_load(model, port, profile, state)
+    end
+  end
+
+  def handle_call({:unload, port}, _from, state) do
+    if PeerRanks.held?(port) do
+      {:reply, {:error, :peer_rank_resident}, state}
+    else
+      do_unload(port, state)
+    end
+  end
+
+  def handle_call(:slots, _from, state) do
+    # Discovered peer ranks are reported alongside this host's own slots so Airo
+    # can see what is holding the GPU, but they are not part of `state.slots` —
+    # nothing here owns or supervises them.
+    own = state.slots |> Map.values() |> Enum.map(&slot_info/1)
+    {:reply, own ++ PeerRanks.slots(), state}
+  end
+
+  defp do_load(%ModelRef{} = model, port, profile, state) do
     case Map.fetch(state.slots, port) do
       :error ->
         {:reply, {:error, :unknown_slot}, state}
@@ -76,7 +104,7 @@ defmodule AiroAgent.Fleet do
     end
   end
 
-  def handle_call({:unload, port}, _from, state) do
+  defp do_unload(port, state) do
     case Map.fetch(state.slots, port) do
       {:ok, slot} when slot.pid != nil ->
         # Intent BEFORE terminate so the monitored :DOWN reads as :unloaded.
@@ -91,9 +119,6 @@ defmodule AiroAgent.Fleet do
         {:reply, {:error, :unknown_slot}, state}
     end
   end
-
-  def handle_call(:slots, _from, state),
-    do: {:reply, state.slots |> Map.values() |> Enum.map(&slot_info/1), state}
 
   @impl true
   def handle_cast({:mark_up, pid, props}, state) do
@@ -193,6 +218,7 @@ defmodule AiroAgent.Fleet do
   defp slot_info(slot) do
     host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
     props = slot.props || %{}
+    cluster = cluster_info(slot)
 
     %SlotInfo{
       port: slot.port,
@@ -204,12 +230,35 @@ defmodule AiroAgent.Fleet do
       parallel: props[:parallel],
       ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
+      cluster_id: cluster[:cluster_id],
+      tp_rank: cluster[:tp_rank],
+      tp_size: cluster[:tp_size],
       # Effective profile once :up; fall back to the requested profile while
       # :loading (before the engine reports its resolved config).
       profile: props[:resolved_profile] || slot.profile,
       started_at: slot.started_at
     }
   end
+
+  # This host's rank in a multi-node load, from the engine adapter (only engines
+  # that can span hosts implement it). Read from the *effective* profile so a
+  # default-supplied `nnodes` isn't missed. `%{}` for an ordinary slot.
+  defp cluster_info(%{model: %ModelRef{engine: engine}} = slot) do
+    adapter = Engine.adapter(engine)
+    props = slot.props || %{}
+    profile = props[:resolved_profile] || slot.profile || %{}
+
+    if function_exported?(adapter, :cluster_info, 2) do
+      adapter.cluster_info(profile, slot.port) || %{}
+    else
+      %{}
+    end
+  rescue
+    # An unknown engine must never sink the slot listing.
+    _ -> %{}
+  end
+
+  defp cluster_info(_empty_slot), do: %{}
 
   defp emit(slot, type, reason) do
     props = slot.props || %{}

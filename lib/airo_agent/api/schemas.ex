@@ -82,6 +82,29 @@ defmodule AiroAgent.Api.Schemas do
           description: "Total KV budget allocated (-c) = ctx × parallel."
         },
         engine_build: %Schema{type: :string, nullable: true, example: "b1-9633186"},
+        deployment_id: %Schema{
+          type: :string,
+          nullable: true,
+          description:
+            "Shared id of the multi-node load this slot is a rank of; null for a " <>
+              "single-host slot. A *load* id — unrelated to Airo's Deployment records.",
+          example: "dep-7f3a1c2b"
+        },
+        tp_rank: %Schema{
+          type: :integer,
+          nullable: true,
+          description:
+            "This host's index in the load (--node-rank). 0 is the head, and the only rank serving the API.",
+          example: 1
+        },
+        tp_size: %Schema{
+          type: :integer,
+          nullable: true,
+          description:
+            "Number of HOSTS in the load (--nnodes), not the tensor-parallel degree. " <>
+              "Each host holds 1/tp_size of the weights.",
+          example: 2
+        },
         profile: %Schema{
           type: :object,
           additionalProperties: true,
