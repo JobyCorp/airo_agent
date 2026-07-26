@@ -18,7 +18,7 @@ defmodule AiroAgent.Api.Router do
   """
 
   use Plug.Router
-  alias AiroAgent.{Inventory, Fleet, GPU}
+  alias AiroAgent.{Inventory, Fleet, GPU, SlotInfo}
 
   plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
   plug(AiroAgent.Api.Auth)
@@ -55,7 +55,7 @@ defmodule AiroAgent.Api.Router do
   end
 
   get "/slots" do
-    json(conn, 200, %{slots: Enum.map(Fleet.slots(), &Map.from_struct/1)})
+    json(conn, 200, %{slots: Enum.map(Fleet.slots(), &SlotInfo.to_payload/1)})
   end
 
   get("/gpu", do: json(conn, 200, GPU.snapshot()))
@@ -69,10 +69,19 @@ defmodule AiroAgent.Api.Router do
 
         with {:ok, model} <- Inventory.get(id),
              {:ok, info} <- Fleet.load(model, slot, profile) do
-          json(conn, 200, Map.from_struct(info))
+          json(conn, 200, SlotInfo.to_payload(info))
         else
-          {:error, :not_found} -> json(conn, 404, %{error: "unknown model", model: id})
-          {:error, reason} -> json(conn, 422, %{error: inspect(reason)})
+          {:error, :not_found} ->
+            json(conn, 404, %{error: "unknown model", model: id})
+
+          # A rank of another host's multi-node load already owns this GPU. 409,
+          # not 422: the request is well-formed, the slot is genuinely occupied
+          # by something this agent doesn't own and won't evict.
+          {:error, :peer_rank_resident} ->
+            json(conn, 409, %{error: "peer_rank_resident", slot: slot})
+
+          {:error, reason} ->
+            json(conn, 422, %{error: inspect(reason)})
         end
 
       %{"model" => _} ->
@@ -87,8 +96,14 @@ defmodule AiroAgent.Api.Router do
     case conn.body_params do
       %{"slot" => slot} when is_integer(slot) ->
         case Fleet.unload(slot) do
-          :ok -> json(conn, 200, %{ok: true})
-          {:error, reason} -> json(conn, 404, %{error: inspect(reason)})
+          :ok ->
+            json(conn, 200, %{ok: true})
+
+          {:error, :peer_rank_resident} ->
+            json(conn, 409, %{error: "peer_rank_resident", slot: slot})
+
+          {:error, reason} ->
+            json(conn, 404, %{error: inspect(reason)})
         end
 
       _ ->

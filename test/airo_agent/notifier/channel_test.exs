@@ -49,8 +49,10 @@ defmodule AiroAgent.Notifier.ChannelTest do
     assert is_list(slots)
 
     for slot <- slots do
+      # `deployment_id` (not `cluster_id`) is the multi-node field name on the
+      # wire — see AiroAgent.SlotInfo.to_payload/1.
       assert Map.keys(slot) |> Enum.sort() ==
-               ~w(base_url ctx ctx_total engine_build parallel port profile resident_model revision started_at status)a
+               ~w(base_url ctx ctx_total deployment_id engine_build parallel port profile resident_model revision started_at status tp_rank tp_size)a
     end
   end
 
@@ -81,6 +83,9 @@ defmodule AiroAgent.Notifier.ChannelTest do
              parallel: 4,
              ctx_total: 146_432,
              engine_build: "b1-9633186",
+             deployment_id: nil,
+             tp_rank: nil,
+             tp_size: nil,
              status: :up,
              reason: nil,
              at: ~U[2026-06-22 00:00:00Z]

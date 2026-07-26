@@ -17,7 +17,7 @@ defmodule AiroAgent.Notifier.Channel do
   @behaviour AiroAgent.Notifier
 
   require Logger
-  alias AiroAgent.Fleet
+  alias AiroAgent.{Fleet, SlotInfo}
   alias AiroAgent.Fleet.Event
 
   def start_link(opts \\ []) do
@@ -108,7 +108,7 @@ defmodule AiroAgent.Notifier.Channel do
   # --- payloads ---
 
   defp push_register(socket) do
-    payload = %{agent: agent_meta(), slots: Enum.map(Fleet.slots(), &Map.from_struct/1)}
+    payload = %{agent: agent_meta(), slots: Enum.map(Fleet.slots(), &SlotInfo.to_payload/1)}
     push(socket, topic(), "register", payload)
   end
 
@@ -121,6 +121,10 @@ defmodule AiroAgent.Notifier.Channel do
       parallel: e.parallel,
       ctx_total: e.ctx_total,
       engine_build: e.engine_build,
+      # Named `deployment_id` on the wire — see `AiroAgent.SlotInfo.to_payload/1`.
+      deployment_id: e.cluster_id,
+      tp_rank: e.tp_rank,
+      tp_size: e.tp_size,
       status: e.type,
       reason: serialize_reason(e.reason),
       at: e.at

@@ -47,7 +47,17 @@ defmodule AiroAgent.Engine do
   @doc "Capabilities this engine can serve for `model` (e.g. [:chat, :embeddings, :vision])."
   @callback capabilities(ModelRef.t()) :: [atom()]
 
-  @optional_callbacks resolve_profile: 2
+  @doc """
+  Multi-node identity for a load, or `nil` when it runs on one host (pure).
+
+  Optional; only engines that can span hosts implement it. `tp_size` is the
+  number of **hosts**, not the tensor-parallel degree — Airo divides the model's
+  weights by it to charge each host its share.
+  """
+  @callback cluster_info(profile(), port :: pos_integer()) ::
+              %{cluster_id: String.t(), tp_rank: non_neg_integer(), tp_size: pos_integer()} | nil
+
+  @optional_callbacks resolve_profile: 2, cluster_info: 2
 
   # --- Dispatch helpers: resolve the configured/per-model engine adapter. ---
 

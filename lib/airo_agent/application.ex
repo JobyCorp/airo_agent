@@ -21,6 +21,7 @@ defmodule AiroAgent.Application do
         # Canonical in-memory state + lifecycle-event emitter; load/unload route here.
         AiroAgent.Fleet
       ] ++
+        peer_rank_children() ++
         notifier_children() ++
         [
           # Control-plane HTTP API. NOT on the inference data path.
@@ -42,6 +43,16 @@ defmodule AiroAgent.Application do
       AiroAgent.Notifier.Channel -> [AiroAgent.Notifier.Supervisor]
       _ -> []
     end
+  end
+
+  # Watch for ranks of a multi-node load that another host launched onto this
+  # GPU. Only container engines can produce them, and only they can be observed
+  # (the labels live on the container), so this follows the same :vllm gate as
+  # the orphan sweep. Must start AFTER Fleet — Fleet merges its slots.
+  defp peer_rank_children do
+    if :vllm in Application.get_env(:airo_agent, :engines, []),
+      do: [AiroAgent.PeerRanks],
+      else: []
   end
 
   # Only container-based engines leave orphan containers; today that's vLLM.

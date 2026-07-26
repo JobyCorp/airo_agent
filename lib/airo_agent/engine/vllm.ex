@@ -124,7 +124,10 @@ defmodule AiroAgent.Engine.Vllm do
           [
             {"VLLM_IMAGE",
              profile[:image] || Application.get_env(:airo_agent, :vllm_image) || ""},
-            {"AIRO_AGENT_MODEL_ROOT", model_root()}
+            {"AIRO_AGENT_MODEL_ROOT", model_root()},
+            # Labelled onto the container in cluster mode so the worker's agent
+            # can name the model of a rank it did not start.
+            {"AIRO_VLLM_SERVED_MODEL", model.id}
           ] ++ cluster_env ++ container_env_pairs(profile) ++ wrapper_overrides(profile),
         readiness: {:http_get, "/health"}
       }
@@ -166,8 +169,54 @@ defmodule AiroAgent.Engine.Vllm do
           "mp"
         ]
 
-        {:ok, argv, cluster_env(cluster)}
+        {:ok, argv, cluster_env(cluster) ++ cluster_identity_env(n, port)}
     end
+  end
+
+  @doc """
+  Stable id for the multi-node load a slot hosts.
+
+  Derived from the head's `host_id` and slot port rather than minted randomly:
+  `launch_spec/3` is required to be pure, and both the agent (reporting its own
+  rank) and the launcher (labelling containers) must arrive at the same value
+  without threading state between them. A reload of the same slot keeps the id,
+  which is what Airo wants — it groups ranks; `resident_since` is what tells it
+  a model was reloaded.
+  """
+  @spec cluster_id(pos_integer()) :: String.t()
+  def cluster_id(port) do
+    host = Application.get_env(:airo_agent, :host_id, "unknown")
+
+    digest =
+      :sha256
+      |> :crypto.hash("#{host}:#{port}")
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 8)
+
+    "dep-" <> digest
+  end
+
+  @impl true
+  def cluster_info(profile, port) do
+    case profile[:nnodes] do
+      n when is_integer(n) and n > 1 ->
+        # tp_size is nnodes — the count of HOSTS. NOT tensor_parallel_size, which
+        # is the total GPU count across the world and is only coincidentally
+        # equal on a one-GPU-per-host pair.
+        %{cluster_id: cluster_id(port), tp_rank: 0, tp_size: n}
+
+      _single_host ->
+        nil
+    end
+  end
+
+  # Identity the vllm-slot wrapper stamps onto both ranks' containers, so the
+  # worker's agent can recognise a rank it did not start.
+  defp cluster_identity_env(nnodes, port) do
+    [
+      {"AIRO_VLLM_CLUSTER_ID", cluster_id(port)},
+      {"AIRO_VLLM_NNODES", to_string(nnodes)}
+    ]
   end
 
   # Fabric facts the vllm-slot wrapper needs to place rank 1 and pin NCCL to the
@@ -371,28 +420,40 @@ defmodule AiroAgent.Engine.Vllm do
   end
 
   @doc """
-  Remove any `airo-slot-*` containers left behind by a previous agent process —
-  e.g. after a hard crash (SIGKILL), where the container outlives the BEAM
-  because it runs in the runtime's cgroup, not the agent's. Best-effort and
-  idempotent; meant to run once at boot before anything loads, so a restart
-  always starts from a clean slate. No-ops if the runtime isn't installed.
+  Remove `airo-slot-*` containers left behind by a previous agent process — e.g.
+  after a hard crash (SIGKILL), where the container outlives the BEAM because it
+  runs in the runtime's cgroup, not the agent's. Best-effort and idempotent;
+  meant to run once at boot before anything loads, so a restart always starts
+  from a clean slate. No-ops if the runtime isn't installed.
+
+  **Scoped to this host's own configured slot ports.** A worker in a two-host
+  cluster holds a rank-1 container that the *head* launched onto it over SSH and
+  supervises; that host declares no slots of its own, so an unscoped sweep would
+  force-remove a live rank on every agent restart and take the whole cluster
+  down with it. Only ports this agent actually manages are its to reclaim.
   """
   @spec reap_orphans() :: :ok
   def reap_orphans do
     rt = Application.get_env(:airo_agent, :container_runtime, "podman")
 
-    with {out, 0} <-
-           System.cmd(rt, ["ps", "-aq", "--filter", "name=airo-slot-"], stderr_to_stdout: true),
-         [_ | _] = ids <- orphan_ids(out) do
-      System.cmd(rt, ["rm", "-f" | ids], stderr_to_stdout: true)
-      Logger.info("vllm: reaped #{length(ids)} orphan slot container(s) via #{rt}")
-    end
+    Enum.each(configured_slots(), fn port ->
+      with {out, 0} <-
+             System.cmd(rt, ["ps", "-aq", "--filter", "name=^airo-slot-#{port}$"],
+               stderr_to_stdout: true
+             ),
+           [_ | _] = ids <- orphan_ids(out) do
+        System.cmd(rt, ["rm", "-f" | ids], stderr_to_stdout: true)
+        Logger.info("vllm: reaped orphan slot container on :#{port} via #{rt}")
+      end
+    end)
 
     reap_worker_orphans(rt)
   rescue
     # runtime binary missing / unexpected output — nothing to reap, never fatal.
     _ -> :ok
   end
+
+  defp configured_slots, do: Application.get_env(:airo_agent, :slots, [])
 
   # A hard-killed agent (SIGKILL skips the wrapper's trap) can orphan a cluster
   # load's rank-1 container on the worker host. Sweep it over the same SSH seam

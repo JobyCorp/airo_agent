@@ -208,6 +208,23 @@ defmodule AiroAgent.Engine.VllmTest do
       assert env_val(spec, "AIRO_VLLM_GID_INDEX") == "5"
     end
 
+    test "nnodes: 2 forwards the identity the wrapper stamps onto both ranks" do
+      with_cluster()
+      {:ok, spec} = Vllm.launch_spec(model(id: "org/big:fp8"), %{nnodes: 2}, 8899)
+
+      assert env_val(spec, "AIRO_VLLM_CLUSTER_ID") == Vllm.cluster_id(8899)
+      assert env_val(spec, "AIRO_VLLM_NNODES") == "2"
+      assert env_val(spec, "AIRO_VLLM_SERVED_MODEL") == "org/big:fp8"
+    end
+
+    test "a single-host load carries no cluster identity env" do
+      with_cluster()
+      {:ok, spec} = Vllm.launch_spec(model(), %{}, 8081)
+
+      assert env_val(spec, "AIRO_VLLM_CLUSTER_ID") == :undefined
+      assert env_val(spec, "AIRO_VLLM_NNODES") == :undefined
+    end
+
     test "a cluster load on an unconfigured host is rejected, not half-launched" do
       assert {:error, :vllm_cluster_not_configured} =
                Vllm.launch_spec(model(), %{nnodes: 2}, 8899)
@@ -394,6 +411,61 @@ defmodule AiroAgent.Engine.VllmTest do
       )
 
       assert {:ok, []} = Vllm.inventory(model_roots: [root])
+    end
+  end
+
+  describe "cluster_info/2" do
+    test "tp_size is the HOST count, not the tensor-parallel degree" do
+      # The distinction is invisible on a one-GPU-per-host pair (both are 2), and
+      # Airo divides the model's weights by tp_size to charge each host its
+      # share — reading the TP degree here would under-report the footprint 4×.
+      info = Vllm.cluster_info(%{nnodes: 2, tensor_parallel_size: 8}, 8081)
+
+      assert info.tp_size == 2
+      assert info.tp_rank == 0
+    end
+
+    test "the launching host is always rank 0 — it is the one serving the API" do
+      assert %{tp_rank: 0} = Vllm.cluster_info(%{nnodes: 4}, 8081)
+    end
+
+    test "a single-host load has no cluster identity" do
+      assert Vllm.cluster_info(%{}, 8081) == nil
+      assert Vllm.cluster_info(%{nnodes: 1}, 8081) == nil
+      assert Vllm.cluster_info(%{tensor_parallel_size: 4}, 8081) == nil
+    end
+
+    test "the id is stable for a slot and distinct between slots" do
+      assert Vllm.cluster_id(8081) == Vllm.cluster_id(8081)
+      refute Vllm.cluster_id(8081) == Vllm.cluster_id(8082)
+      assert Vllm.cluster_id(8081) =~ ~r/^dep-[0-9a-f]{8}$/
+    end
+
+    test "the id follows the host, so two heads never collide" do
+      Application.put_env(:airo_agent, :host_id, "sparky")
+      on_exit(fn -> Application.delete_env(:airo_agent, :host_id) end)
+      sparky = Vllm.cluster_id(8081)
+
+      Application.put_env(:airo_agent, :host_id, "sparky2")
+
+      refute Vllm.cluster_id(8081) == sparky
+    end
+  end
+
+  describe "reap_orphans/0 scoping" do
+    test "only this host's configured slot ports are swept" do
+      # A worker in a two-host cluster declares no slots: the rank-1 container on
+      # its GPU belongs to the head, which supervises it over SSH. An unscoped
+      # sweep would force-remove a live rank on every agent restart and take the
+      # whole cluster down.
+      Application.put_env(:airo_agent, :slots, [])
+      Application.put_env(:airo_agent, :container_runtime, "definitely-not-a-runtime")
+      on_exit(fn -> Application.delete_env(:airo_agent, :slots) end)
+      on_exit(fn -> Application.delete_env(:airo_agent, :container_runtime) end)
+
+      # No configured slots ⇒ nothing to iterate ⇒ no runtime call at all, so a
+      # bogus runtime binary can't even be reached.
+      assert Vllm.reap_orphans() == :ok
     end
   end
 end

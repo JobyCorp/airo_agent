@@ -87,6 +87,19 @@ name="airo-slot-${port:-vllm}"
 port_args=()
 [ -n "$port" ] && port_args=(-p "${port}:${port}")
 
+# Cluster identity, stamped onto BOTH ranks so each host's agent can recognise a
+# container it did not start (rank 1 is launched here but runs on the worker).
+# Rank differs per invocation and is appended at the call site.
+cluster_labels=()
+if [ "${AIRO_VLLM_CLUSTER:-0}" = "1" ]; then
+  cluster_labels=(
+    --label "airo.cluster.id=${AIRO_VLLM_CLUSTER_ID:-}"
+    --label "airo.cluster.size=${AIRO_VLLM_NNODES:-}"
+    --label "airo.cluster.model=${AIRO_VLLM_SERVED_MODEL:-}"
+    --label "airo.slot.port=${port}"
+  )
+fi
+
 # Profile-supplied in-container env (newline-separated K=V → -e flags).
 env_args=()
 if [ -n "${AIRO_VLLM_CONTAINER_ENV:-}" ]; then
@@ -167,6 +180,8 @@ remote_cmd=("$RT" run --rm --name "$name"
   "${entrypoint_args[@]}"
   "${vllm_run_args[@]}"
   "${cluster_run_args[@]}"
+  "${cluster_labels[@]}"
+  --label airo.cluster.rank=1
   -e HF_HUB_OFFLINE=1
   "${nccl_env[@]}"
   -e "VLLM_HOST_IP=${AIRO_VLLM_WORKER_IP:-}"
@@ -185,6 +200,8 @@ remote_cmd+=("${worker_args[@]}")
   "${entrypoint_args[@]}" \
   "${vllm_run_args[@]}" \
   "${cluster_run_args[@]}" \
+  "${cluster_labels[@]}" \
+  --label airo.cluster.rank=0 \
   -e HF_HUB_OFFLINE=1 \
   "${nccl_env[@]}" \
   -e "VLLM_HOST_IP=$AIRO_VLLM_MASTER_IP" \
