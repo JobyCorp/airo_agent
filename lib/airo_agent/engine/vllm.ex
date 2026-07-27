@@ -303,6 +303,26 @@ defmodule AiroAgent.Engine.Vllm do
   def capabilities(%ModelRef{path: dir}),
     do: dir |> Path.join("config.json") |> read_config() |> capabilities_from_config()
 
+  # Everything launch_spec/3 and default_profile/1 actually read.
+  #
+  # NOTE what is absent: temperature / top_p / repeat_penalty / presence_penalty
+  # / frequency_penalty. llama.cpp maps all five to server-side defaults; this
+  # adapter maps none, and that is deliberate — vLLM's own whitelist is narrow
+  # (OpenAI-style frequency/presence penalties are dropped by the server), and
+  # per-request params override server defaults anyway, so Airo is the right
+  # place to set sampling. A server-side default that genuinely must exist rides
+  # in `extra_argv` via `--override-generation-config`. Declaring the omission
+  # here is what makes it visible rather than silent.
+  @impl true
+  def honored_profile_keys do
+    ~w(
+      ctx parallel extra_argv disable_thinking
+      tensor_parallel_size gpu_memory_utilization dtype quantization
+      kv_cache_dtype trust_remote_code
+      nnodes image container_env entrypoint cmd_prefix
+    )a
+  end
+
   # --- tool calling / thinking (launch-time identity, like llama.cpp's knobs) ---
 
   # Engine-neutral disable_thinking knob → vLLM's server-side template kwarg.
@@ -389,6 +409,7 @@ defmodule AiroAgent.Engine.Vllm do
   via the slot's resolved `profile`). Each endpoint is fetched independently and
   never raises; missing facts come back `nil`.
   """
+  @impl true
   def runtime_props(port) when is_integer(port) do
     base = "http://127.0.0.1:#{port}"
 
@@ -432,7 +453,7 @@ defmodule AiroAgent.Engine.Vllm do
   force-remove a live rank on every agent restart and take the whole cluster
   down with it. Only ports this agent actually manages are its to reclaim.
   """
-  @spec reap_orphans() :: :ok
+  @impl true
   def reap_orphans do
     rt = Application.get_env(:airo_agent, :container_runtime, "podman")
 

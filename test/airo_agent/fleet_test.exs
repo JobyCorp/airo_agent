@@ -87,6 +87,47 @@ defmodule AiroAgent.FleetTest do
     assert slot.profile == %{ctx: 36_608, parallel: 4, flash_attn: "on"}
   end
 
+  test "parallel falls back to the configured value when the engine can't report it" do
+    {:ok, _} = Fleet.load(model("m2c"), @slot, %{ctx: 8192, parallel: 6})
+    assert_receive {:event, %Event{type: :loading}}
+
+    # A vLLM-shaped readiness report: it owns paged-KV batching internally and
+    # has no runtime analogue for parallel/ctx_total, so it sends them nil. The
+    # configured --max-num-seqs is still known, and Airo should see it rather
+    # than a blank where llama.cpp would have given a number.
+    FakeInstance.become_ready(child_pid(), %{
+      ctx: 8192,
+      parallel: nil,
+      ctx_total: nil,
+      engine_build: "0.25.2-test",
+      resolved_profile: %{ctx: 8192, parallel: 6, dtype: "auto"}
+    })
+
+    # The pushed event and the slot listing must agree — Airo reconciles hosts
+    # from the register, so a disagreement would flip on every heartbeat.
+    assert_receive {:event, %Event{type: :up, parallel: 6, ctx_total: nil}}
+
+    slot = Enum.find(Fleet.slots(), &(&1.port == @slot))
+    assert slot.parallel == 6
+    # No invented value: ctx_total is llama.cpp's ctx × parallel budget and has
+    # no vLLM meaning, so it stays nil rather than being derived.
+    assert slot.ctx_total == nil
+  end
+
+  test "an engine-reported parallel wins over the configured one" do
+    {:ok, _} = Fleet.load(model("m2d"), @slot, %{parallel: 6})
+    assert_receive {:event, %Event{type: :loading}}
+
+    # llama-server resolved 4 slots despite the request; report what is real.
+    FakeInstance.become_ready(child_pid(), %{
+      parallel: 4,
+      resolved_profile: %{parallel: 6}
+    })
+
+    assert_receive {:event, %Event{type: :up, parallel: 4}}
+    assert Enum.find(Fleet.slots(), &(&1.port == @slot)).parallel == 4
+  end
+
   test "an unexpected exit marks the slot :down with the reason" do
     {:ok, _} = Fleet.load(model("m3"), @slot)
     FakeInstance.become_ready(child_pid())
