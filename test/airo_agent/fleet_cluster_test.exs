@@ -82,6 +82,42 @@ defmodule AiroAgent.FleetClusterTest do
     end
   end
 
+  # The head's own rank is a normal Fleet slot, so its transitions go out as
+  # Fleet events rather than PeerRanks ones. They must carry the same identity:
+  # an anonymous slot event leaves Airo unable to tell WHICH cluster just lost a
+  # member, and the group's health would only correct at the next register.
+  describe "the head's own rank on the wire" do
+    defp cluster_model(id),
+      do: %ModelRef{id: id, path: "/tmp/#{id}", engine: :vllm, revision: "rev-#{id}"}
+
+    test "a multi-node load's events carry the cluster identity" do
+      {:ok, _} = Fleet.load(cluster_model("big"), @slot, %{nnodes: 2})
+
+      expected = AiroAgent.Engine.Vllm.cluster_id(@slot)
+
+      assert_receive {:event,
+                      %Event{type: :loading, cluster_id: ^expected, tp_rank: 0, tp_size: 2}}
+    end
+
+    test "identity survives teardown — when a rank dies is when Airo needs it most" do
+      {:ok, _} = Fleet.load(cluster_model("big"), @slot, %{nnodes: 2})
+      assert_receive {:event, %Event{type: :loading}}
+
+      :ok = Fleet.unload(@slot)
+
+      expected = AiroAgent.Engine.Vllm.cluster_id(@slot)
+
+      assert_receive {:event,
+                      %Event{type: :unloaded, cluster_id: ^expected, tp_rank: 0, tp_size: 2}}
+    end
+
+    test "an ordinary single-host load carries no cluster identity" do
+      {:ok, _} = Fleet.load(cluster_model("small"), @slot, %{})
+
+      assert_receive {:event, %Event{type: :loading, cluster_id: nil, tp_rank: nil, tp_size: nil}}
+    end
+  end
+
   describe "load guard" do
     test "refuses to load onto a port held by another host's rank" do
       see([FakePeerDiscovery.peer(@peer_slot)])

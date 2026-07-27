@@ -124,6 +124,21 @@ defmodule AiroAgent.Engine.LlamaCpp do
   @impl true
   def capabilities(%ModelRef{path: path}), do: caps_for(path)
 
+  # Everything launch_spec/3 and default_profile/1 actually read. Sampling knobs
+  # ARE honoured here (llama-server takes them as server-side defaults); the vLLM
+  # adapter deliberately maps none of them, which is the asymmetry
+  # `AiroAgent.Instance` now surfaces at launch.
+  @impl true
+  def honored_profile_keys do
+    ~w(
+      ctx parallel extra_argv disable_thinking
+      temperature top_p repeat_penalty presence_penalty frequency_penalty
+      dry_multiplier reasoning_budget reasoning_format
+      ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type
+      jinja chat_template mmproj ld_library_path
+    )a
+  end
+
   # :vision when a multimodal projector sits beside the model. Matches any
   # *mmproj*.gguf — naming differs by publisher (unsloth `mmproj-F16.gguf`,
   # ggml-org `moondream2-mmproj-f16-*.gguf`).
@@ -147,6 +162,7 @@ defmodule AiroAgent.Engine.LlamaCpp do
   what the engine is *actually* serving with, distinct from the model's ctx_max.
   Never raises; returns `%{}` if the engine is unreachable.
   """
+  @impl true
   def runtime_props(port) when is_integer(port) do
     case Req.get("http://127.0.0.1:#{port}/props", retry: false, receive_timeout: 2_000) do
       {:ok, %{status: 200, body: body}} when is_map(body) -> parse_props(body)

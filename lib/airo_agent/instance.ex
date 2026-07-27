@@ -11,6 +11,7 @@ defmodule AiroAgent.Instance do
   """
 
   use GenServer, restart: :temporary
+  require Logger
 
   alias AiroAgent.{Engine, Fleet, ModelRef}
 
@@ -28,6 +29,7 @@ defmodule AiroAgent.Instance do
   def init(%{model: %ModelRef{} = model, profile: profile, port: port}) do
     Process.flag(:trap_exit, true)
     adapter = Engine.adapter(model.engine)
+    warn_unhonored_keys(adapter, model, profile)
 
     with {:ok, launch} <- adapter.launch_spec(model, profile, port),
          bin <- bin_for(model.engine),
@@ -88,15 +90,36 @@ defmodule AiroAgent.Instance do
 
   # Engine-reported runtime facts (ctx/parallel/build), if the adapter exposes them.
   defp runtime_props(%{adapter: adapter, port: port}) do
-    if function_exported?(adapter, :runtime_props, 1), do: adapter.runtime_props(port), else: %{}
+    if Engine.exports?(adapter, :runtime_props, 1), do: adapter.runtime_props(port), else: %{}
   end
 
   # Effective launch profile (defaults applied), if the adapter exposes it.
   defp resolved_profile(adapter, model, profile) do
-    if function_exported?(adapter, :resolve_profile, 2),
+    if Engine.exports?(adapter, :resolve_profile, 2),
       do: adapter.resolve_profile(model, profile),
       else: profile
   end
+
+  # `POST /load` accepts the union of every engine's profile keys, so a profile
+  # written for one backend loads happily on another with its foreign keys doing
+  # nothing — `temperature` reaches llama-server as `--temp` and vanishes on
+  # vLLM. That portability is intentional, so this is a warning and not an
+  # error; the point is that the difference stops being invisible. Checked
+  # against the REQUESTED profile: the resolved one is all defaults the adapter
+  # supplied itself, which are honoured by construction.
+  defp warn_unhonored_keys(adapter, %ModelRef{} = model, profile) when is_map(profile) do
+    with true <- Engine.exports?(adapter, :honored_profile_keys, 0),
+         [_ | _] = ignored <- Enum.sort(Map.keys(profile) -- adapter.honored_profile_keys()) do
+      Logger.warning(
+        "#{inspect(adapter)}: ignoring profile key(s) #{Enum.join(ignored, ", ")} " <>
+          "for #{model.id} — not read by this engine"
+      )
+    end
+
+    :ok
+  end
+
+  defp warn_unhonored_keys(_adapter, _model, _profile), do: :ok
 
   defp bin_for(engine) do
     Application.get_env(:airo_agent, :engine_bin, %{})

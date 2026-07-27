@@ -3,12 +3,15 @@ defmodule AiroAgent.Application do
 
   use Application
 
+  alias AiroAgent.Engine
+
   @impl true
   def start(_type, _args) do
-    # Before anything can load: sweep container engines' orphan slots left by a
-    # prior crashed agent (they outlive the BEAM — they're in the runtime's
-    # cgroup, not ours). Gated so llama-only hosts never shell out to a runtime.
-    reap_orphan_containers()
+    # Before anything can load: let each configured engine reclaim children a
+    # prior crashed agent left behind (a container outlives the BEAM — it's in
+    # the runtime's cgroup, not ours). Engines with nothing to reclaim don't
+    # implement the callback, so a llama-only host never shells out.
+    reap_orphans()
 
     children =
       [
@@ -55,11 +58,17 @@ defmodule AiroAgent.Application do
       else: []
   end
 
-  # Only container-based engines leave orphan containers; today that's vLLM.
-  defp reap_orphan_containers do
-    if :vllm in Application.get_env(:airo_agent, :engines, []) do
-      AiroAgent.Engine.Vllm.reap_orphans()
-    end
+  # Dispatched over this host's configured engines rather than naming vLLM: the
+  # ability to orphan a child is a property of the engine, so the adapter that
+  # has it declares `reap_orphans/0` and the next container-based backend is
+  # swept without touching boot. Today only vLLM implements it.
+  defp reap_orphans do
+    Application.get_env(:airo_agent, :engines, [])
+    |> Enum.filter(&Engine.known?/1)
+    |> Enum.map(&Engine.adapter/1)
+    |> Enum.each(fn adapter ->
+      if Engine.exports?(adapter, :reap_orphans, 0), do: adapter.reap_orphans()
+    end)
 
     :ok
   end

@@ -57,7 +57,52 @@ defmodule AiroAgent.Engine do
   @callback cluster_info(profile(), port :: pos_integer()) ::
               %{cluster_id: String.t(), tp_rank: non_neg_integer(), tp_size: pos_integer()} | nil
 
-  @optional_callbacks resolve_profile: 2, cluster_info: 2
+  @doc """
+  The profile keys this engine actually reads (pure).
+
+  `POST /load` accepts the **union** of every engine's keys
+  (`AiroAgent.Api.Router.profile_keys/0`), so a profile written for one backend
+  is accepted verbatim by another and its foreign keys silently do nothing —
+  `temperature` on vLLM is the live example: llama.cpp maps it to `--temp`,
+  vLLM maps it nowhere at all. Declaring what an adapter honours lets
+  `AiroAgent.Instance` log the difference once at launch, so the gap is visible
+  instead of silent.
+
+  This is deliberately NOT an error: dropping a foreign key is what makes one
+  profile portable across hosts. Optional — an adapter that doesn't implement it
+  is simply never reported on.
+  """
+  @callback honored_profile_keys() :: [atom()]
+
+  @doc """
+  Best-effort facts scraped from a **running** engine — what it is actually
+  serving with, as opposed to what was requested. Called once at readiness by
+  `AiroAgent.Instance` and merged onto the slot.
+
+  Recognised keys: `ctx`, `parallel`, `ctx_total`, `engine_build`. An engine that
+  has no runtime analogue for one reports it `nil` (vLLM owns batching
+  internally, so `parallel`/`ctx_total` come from the profile instead — see
+  `AiroAgent.Fleet`). Must never raise: return `%{}` when the engine is
+  unreachable. Optional.
+  """
+  @callback runtime_props(port :: pos_integer()) :: map()
+
+  @doc """
+  Reclaim engine children left behind by a *previous* agent process, before
+  anything loads.
+
+  Only engines whose children can outlive the BEAM need this: a container runs in
+  the runtime's cgroup rather than ours, whereas a `MuonTrap` child is reaped
+  with the VM. Best-effort and idempotent — run once at boot, and never fatal.
+  Optional.
+  """
+  @callback reap_orphans() :: :ok
+
+  @optional_callbacks resolve_profile: 2,
+                      cluster_info: 2,
+                      honored_profile_keys: 0,
+                      runtime_props: 1,
+                      reap_orphans: 0
 
   # --- Dispatch helpers: resolve the configured/per-model engine adapter. ---
 
@@ -65,6 +110,18 @@ defmodule AiroAgent.Engine do
 
   @spec adapter(atom()) :: module()
   def adapter(engine), do: Map.fetch!(@adapters, engine)
+
+  @doc """
+  Whether `adapter` implements an optional callback, loading it first.
+
+  `function_exported?/3` answers `false` for a module that merely hasn't been
+  loaded yet, which is exactly the state adapters are in during boot under
+  `:interactive` code loading (dev/test) — so the orphan sweep would silently
+  skip every engine. `Code.ensure_loaded?/1` closes that.
+  """
+  @spec exports?(module(), atom(), arity()) :: boolean()
+  def exports?(adapter, fun, arity),
+    do: Code.ensure_loaded?(adapter) and function_exported?(adapter, fun, arity)
 
   @doc "Whether an engine has a registered adapter (i.e. `adapter/1` won't raise)."
   @spec known?(atom()) :: boolean()

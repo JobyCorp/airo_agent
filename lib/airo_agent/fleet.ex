@@ -219,6 +219,7 @@ defmodule AiroAgent.Fleet do
     host = Application.get_env(:airo_agent, :advertise_host, "127.0.0.1")
     props = slot.props || %{}
     cluster = cluster_info(slot)
+    profile = effective_profile(slot)
 
     %SlotInfo{
       port: slot.port,
@@ -227,15 +228,13 @@ defmodule AiroAgent.Fleet do
       resident_model: slot.model && slot.model.id,
       revision: slot.model && slot.model.revision,
       ctx: props[:ctx],
-      parallel: props[:parallel],
+      parallel: props[:parallel] || profile[:parallel],
       ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
       cluster_id: cluster[:cluster_id],
       tp_rank: cluster[:tp_rank],
       tp_size: cluster[:tp_size],
-      # Effective profile once :up; fall back to the requested profile while
-      # :loading (before the engine reports its resolved config).
-      profile: props[:resolved_profile] || slot.profile,
+      profile: profile,
       started_at: slot.started_at
     }
   end
@@ -245,10 +244,9 @@ defmodule AiroAgent.Fleet do
   # default-supplied `nnodes` isn't missed. `%{}` for an ordinary slot.
   defp cluster_info(%{model: %ModelRef{engine: engine}} = slot) do
     adapter = Engine.adapter(engine)
-    props = slot.props || %{}
-    profile = props[:resolved_profile] || slot.profile || %{}
+    profile = effective_profile(slot)
 
-    if function_exported?(adapter, :cluster_info, 2) do
+    if Engine.exports?(adapter, :cluster_info, 2) do
       adapter.cluster_info(profile, slot.port) || %{}
     else
       %{}
@@ -260,8 +258,29 @@ defmodule AiroAgent.Fleet do
 
   defp cluster_info(_empty_slot), do: %{}
 
-  defp emit(slot, type, reason) do
+  # Effective launch profile once :up; the requested profile while :loading
+  # (before the engine reports its resolved config).
+  defp effective_profile(slot) do
     props = slot.props || %{}
+    props[:resolved_profile] || slot.profile || %{}
+  end
+
+  # Prefer what the engine reports it is actually serving; fall back to the
+  # configured value for engines with no runtime analogue to scrape. vLLM owns
+  # batching internally and reports `parallel` nil, so Airo saw a blank where
+  # llama.cpp gave a number — for a knob Airo had itself set (`--max-num-seqs`).
+  # `ctx_total` gets no such fallback: it is llama.cpp's `ctx × parallel` KV
+  # budget and has no vLLM meaning to report.
+  defp effective_parallel(slot) do
+    props = slot.props || %{}
+    props[:parallel] || effective_profile(slot)[:parallel]
+  end
+
+  defp emit(slot, type, reason) do
+    # Derived exactly as in slot_info/1, so a pushed event and the register can
+    # never disagree about a slot.
+    props = slot.props || %{}
+    cluster = cluster_info(slot)
 
     Notifier.publish(%Event{
       type: type,
@@ -269,9 +288,17 @@ defmodule AiroAgent.Fleet do
       resident_model: slot.model && slot.model.id,
       revision: slot.model && slot.model.revision,
       ctx: props[:ctx],
-      parallel: props[:parallel],
+      parallel: effective_parallel(slot),
       ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
+      # A rank's transition must carry its cluster identity or Airo can't tell
+      # WHICH cluster just lost a member — it would land as an anonymous slot
+      # event and the group's health would only correct at the next register.
+      # The teardown paths emit the pre-teardown slot, so this still resolves on
+      # :down/:failed/:unloaded, which is exactly when it matters most.
+      cluster_id: cluster[:cluster_id],
+      tp_rank: cluster[:tp_rank],
+      tp_size: cluster[:tp_size],
       reason: reason,
       at: DateTime.utc_now()
     })

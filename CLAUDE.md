@@ -35,7 +35,7 @@ bin/rollback.sh gpu-01         # instant symlink-flip rollback
 
 The whole system is built around an **engine-neutral seam** so backends are swappable without touching supervision, the HTTP API, or readiness logic.
 
-- **`AiroAgent.Engine`** (`engine.ex`) — the behaviour. Adapters (`Engine.LlamaCpp`, `Engine.Vllm`) implement `inventory/1` (scan host for local models + provenance) and `launch_spec/3` (build argv/env to serve a model — **pure, no side effects**). **Design rule: an Engine callback NEVER spawns or owns a process.** `@adapters` maps `:llama_cpp`/`:vllm` → module; `inventory_all/1` merges across the host's configured engines and skips unknown ones rather than crashing.
+- **`AiroAgent.Engine`** (`engine.ex`) — the behaviour. Adapters (`Engine.LlamaCpp`, `Engine.Vllm`) implement `inventory/1` (scan host for local models + provenance) and `launch_spec/3` (build argv/env to serve a model — **pure, no side effects**). **Design rule: an Engine callback NEVER spawns or owns a process.** `@adapters` maps `:llama_cpp`/`:vllm` → module; `inventory_all/1` merges across the host's configured engines and skips unknown ones rather than crashing. Optional callbacks (`resolve_profile/2`, `cluster_info/2`, `honored_profile_keys/0`, `runtime_props/1`, `reap_orphans/0`) are dispatched through `Engine.exports?/3` — use it, not bare `function_exported?/3`, which answers `false` for a module that merely hasn't loaded yet (the orphan sweep runs at boot, before anything touches an adapter).
 
 - **`AiroAgent.Fleet`** (`fleet.ex`) — the **lifecycle brain** and canonical in-memory state (a GenServer). Owns this host's *slots* (a slot = a static port holding at most one resident model). `load/3` swaps a model into a slot; `unload/1` frees it. It monitors each engine process and classifies its `:DOWN` as `:unloaded` (intended) vs `:failed`/`:down` (crash) using an intent flag set before teardown and demonitor-on-swap. Emits `Fleet.Event`s on every transition.
 
@@ -60,6 +60,8 @@ Boot order (`application.ex`): orphan-container sweep (vLLM only) → `GPU` → 
 1. **The ctx contract differs per engine.** llama.cpp's `-c` is the *total* KV budget split across `--parallel` sequences, so the agent sets `-c = ctx × parallel` (contract "A": `ctx` is the per-request window). vLLM's `--max-model-len` IS the per-request window directly (no ×parallel), and `parallel → --max-num-seqs`. A vLLM load with NO `ctx` is capped at `min(ctx_max, 32768)` — vLLM's own default is the model's full window, which OOMs small cards. See the moduledocs in `engine/llama_cpp.ex` and `engine/vllm.ex`.
 
 2. **A changed `profile` is NOT idempotent.** `Fleet.load/3` short-circuits only when the same model is resident *with the same profile*; a new profile (e.g. different ctx) falls through to a full engine relaunch.
+
+3. **`POST /load` accepts the union of every engine's profile keys.** A key the target engine doesn't read is dropped — deliberately, so one profile is portable across hosts. Sampling is the live asymmetry: llama.cpp maps `temperature`/`top_p`/the three penalties to argv, vLLM maps none. Adapters declare what they read via `honored_profile_keys/0`; `Instance` logs the difference at launch, and `AiroAgent.EngineTest` pins those lists against the router allowlist in **both** directions (a key an adapter reads but the router omits can never reach it — that was the `mmproj` bug).
 
 ## Configuration
 

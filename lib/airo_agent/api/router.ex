@@ -33,12 +33,18 @@ defmodule AiroAgent.Api.Router do
   # Accepted launch-profile keys (shared + per-engine). Anything else in a POST
   # /load profile is dropped by atomize_profile/1. `ctx`/`parallel`/`extra_argv`
   # are shared; the rest are engine-specific knobs the adapter understands.
+  #
+  # This is the UNION across engines, so a profile written for one backend is
+  # accepted verbatim by another and its foreign keys simply do nothing — which
+  # `AiroAgent.Instance` logs at launch, per `Engine.honored_profile_keys/0`.
+  # A key an adapter reads but this list omits can NEVER reach it, however well
+  # documented (that was `mmproj`); `AiroAgent.EngineTest` pins both directions.
   @profile_keys ~w(
     ctx parallel extra_argv disable_thinking
     temperature top_p repeat_penalty presence_penalty frequency_penalty
     dry_multiplier
     ngl n_cpu_moe flash_attn cache_type_k cache_type_v spec_type jinja
-    chat_template reasoning_budget reasoning_format ld_library_path
+    chat_template reasoning_budget reasoning_format ld_library_path mmproj
     tensor_parallel_size gpu_memory_utilization dtype quantization
     kv_cache_dtype trust_remote_code
     nnodes image container_env entrypoint cmd_prefix

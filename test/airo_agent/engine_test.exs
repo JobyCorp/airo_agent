@@ -36,4 +36,77 @@ defmodule AiroAgent.EngineTest do
       assert log =~ "unknown engine :tgi"
     end
   end
+
+  describe "exports?/3" do
+    test "detects an optional callback even when the module isn't loaded yet" do
+      # The orphan sweep runs at boot, before anything has touched the adapter.
+      # Bare function_exported?/3 answers false for an unloaded module, which
+      # would silently skip the sweep under :interactive code loading.
+      #
+      # Purges AiroAgent.Test.LazyAdapter rather than a real adapter: unloading
+      # one the rest of the suite is using would break whatever runs alongside.
+      adapter = AiroAgent.Test.LazyAdapter
+      :code.purge(adapter)
+      :code.delete(adapter)
+      refute :erlang.function_exported(adapter, :reap_orphans, 0)
+
+      assert Engine.exports?(adapter, :reap_orphans, 0)
+      # ...and it really did load it back, not just report optimistically.
+      assert :erlang.function_exported(adapter, :reap_orphans, 0)
+    end
+
+    test "false for a callback an adapter doesn't implement" do
+      refute Engine.exports?(AiroAgent.Engine.LlamaCpp, :cluster_info, 2)
+      refute Engine.exports?(AiroAgent.Engine.LlamaCpp, :reap_orphans, 0)
+      refute Engine.exports?(NotAModule, :inventory, 1)
+    end
+  end
+
+  # POST /load atomizes against one shared whitelist, so a key an adapter reads
+  # but the router omits can never reach it — however well documented it is. That
+  # is exactly how llama.cpp's `mmproj` override was dead on arrival.
+  describe "profile-key parity between the adapters and the API" do
+    @adapters [AiroAgent.Engine.LlamaCpp, AiroAgent.Engine.Vllm]
+
+    defp accepted_keys, do: MapSet.new(AiroAgent.Api.Router.profile_keys(), &String.to_atom/1)
+
+    test "every key an adapter honours is accepted by POST /load" do
+      for adapter <- @adapters do
+        unreachable =
+          MapSet.difference(MapSet.new(adapter.honored_profile_keys()), accepted_keys())
+
+        assert MapSet.equal?(unreachable, MapSet.new()),
+               "#{inspect(adapter)} reads #{inspect(MapSet.to_list(unreachable))}, " <>
+                 "but POST /load drops those keys before the adapter sees them — " <>
+                 "add them to AiroAgent.Api.Router's @profile_keys"
+      end
+    end
+
+    test "every key POST /load accepts is honoured by at least one adapter" do
+      honoured = @adapters |> Enum.flat_map(& &1.honored_profile_keys()) |> MapSet.new()
+      dead = MapSet.difference(accepted_keys(), honoured)
+
+      assert MapSet.equal?(dead, MapSet.new()),
+             "POST /load accepts #{inspect(MapSet.to_list(dead))}, which no adapter reads"
+    end
+
+    test "the sampling knobs are the known asymmetry: llama.cpp honours them, vLLM does not" do
+      sampling = [:temperature, :top_p, :repeat_penalty, :presence_penalty, :frequency_penalty]
+      llama = AiroAgent.Engine.LlamaCpp.honored_profile_keys()
+      vllm = AiroAgent.Engine.Vllm.honored_profile_keys()
+
+      for key <- sampling do
+        assert key in llama, "llama.cpp maps #{key} to argv"
+        refute key in vllm, "vLLM maps no sampling keys — see Engine.Vllm.honored_profile_keys/0"
+      end
+    end
+
+    test "the engine-neutral knobs are honoured by both" do
+      for key <- [:ctx, :parallel, :extra_argv, :disable_thinking],
+          adapter <- @adapters do
+        assert key in adapter.honored_profile_keys(),
+               "#{inspect(adapter)} must honour the engine-neutral key #{key}"
+      end
+    end
+  end
 end

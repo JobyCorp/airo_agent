@@ -53,6 +53,19 @@ auto-detect the model's tool-call format from its chat template and add the
 matching `--tool-call-parser` (an `extra_argv` carrying `--tool-call-parser`
 overrides).
 
+`POST /load` accepts the **union** of every engine's profile keys, so one
+profile is portable across hosts and any key the target engine doesn't read is
+simply dropped. That is deliberate, but it is not silent: the agent logs
+`ignoring profile key(s) …` at launch, naming them. The asymmetry worth knowing
+is **sampling** — `temperature`, `top_p`, `repeat_penalty`, `presence_penalty`
+and `frequency_penalty` reach llama-server as server-side defaults, and the vLLM
+adapter maps none of them (vLLM's own whitelist is narrow, and per-request
+params override server defaults anyway — set sampling in Airo, or pass
+`--override-generation-config` via `extra_argv`). Each adapter declares what it
+reads via `Engine.honored_profile_keys/0`, and a test pins that list against the
+API allowlist in both directions, so a key an engine reads can never again be
+dropped before it arrives.
+
 ## Configuration (env)
 
 | Var | Default | Purpose |
