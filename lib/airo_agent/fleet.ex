@@ -278,8 +278,9 @@ defmodule AiroAgent.Fleet do
 
   defp emit(slot, type, reason) do
     # Derived exactly as in slot_info/1, so a pushed event and the register can
-    # never disagree about concurrency.
+    # never disagree about a slot.
     props = slot.props || %{}
+    cluster = cluster_info(slot)
 
     Notifier.publish(%Event{
       type: type,
@@ -290,6 +291,14 @@ defmodule AiroAgent.Fleet do
       parallel: effective_parallel(slot),
       ctx_total: props[:ctx_total],
       engine_build: props[:engine_build],
+      # A rank's transition must carry its cluster identity or Airo can't tell
+      # WHICH cluster just lost a member — it would land as an anonymous slot
+      # event and the group's health would only correct at the next register.
+      # The teardown paths emit the pre-teardown slot, so this still resolves on
+      # :down/:failed/:unloaded, which is exactly when it matters most.
+      cluster_id: cluster[:cluster_id],
+      tp_rank: cluster[:tp_rank],
+      tp_size: cluster[:tp_size],
       reason: reason,
       at: DateTime.utc_now()
     })
