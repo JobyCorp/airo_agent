@@ -162,7 +162,7 @@ none and its peer stays undiscovered until the cluster is next reloaded.
 
 ```bash
 curl -sH "Authorization: Bearer <mgmt-key>" \
-  https://airo.local.joby.gg/v1/serving | jq '.clusters'
+  https://llm.local.joby.gg/v1/serving | jq '.clusters'
 ```
 
 Expect one entry, `complete: true`, `serving: true`, two members — `sparky`
