@@ -47,7 +47,7 @@ defmodule AiroAgent.Api.Router do
     chat_template reasoning_budget reasoning_format ld_library_path mmproj
     tensor_parallel_size gpu_memory_utilization dtype quantization
     kv_cache_dtype trust_remote_code
-    nnodes image container_env entrypoint cmd_prefix
+    nnodes image container_env entrypoint cmd_prefix encoding_file
   )
 
   get("/health", do: json(conn, 200, %{status: "ok"}))

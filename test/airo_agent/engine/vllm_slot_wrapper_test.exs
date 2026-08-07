@@ -108,4 +108,65 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
       refute launch =~ "airo.cluster"
     end
   end
+
+  # A checkpoint can ship a newer tokenizer encoding than the runtime image carries;
+  # the mount has to reach BOTH ranks or they encode prompts differently, which is
+  # invisible until generations quietly diverge.
+  describe "encoding override" do
+    @target "/usr/local/lib/python3.12/dist-packages/vllm/tokenizers/deepseek_v4_encoding.py"
+
+    defp encoding_file(dir) do
+      path = Path.join(dir, "encoding_dsv4.py")
+      File.write!(path, "# stub\n")
+      path
+    end
+
+    test "mounts read-only over the image copy", %{dir: dir, log: log} do
+      src = encoding_file(dir)
+      {_out, 0} = run(dir, [{"AIRO_VLLM_ENCODING_FILE", src}])
+
+      assert rank_launch(log, "0") =~ "-v #{src}:#{@target}:ro"
+    end
+
+    test "reaches both ranks in cluster mode", %{dir: dir, log: log} do
+      src = encoding_file(dir)
+
+      {_out, 0} =
+        run(dir, [
+          {"AIRO_VLLM_CLUSTER", "1"},
+          {"AIRO_VLLM_WORKER_SSH", "jody@192.168.100.11"},
+          {"AIRO_VLLM_MASTER_IP", "192.168.100.10"},
+          {"AIRO_VLLM_NCCL_IF", "enP2p1s0f1np1"},
+          {"AIRO_VLLM_ENCODING_FILE", src}
+        ])
+
+      # Rank 1's mount has to survive `printf '%q '` on the way to SSH.
+      for rank <- ~w(0 1), do: assert(rank_launch(log, rank) =~ "#{src}:#{@target}:ro")
+    end
+
+    test "honors a custom target path", %{dir: dir, log: log} do
+      src = encoding_file(dir)
+
+      {_out, 0} =
+        run(dir, [{"AIRO_VLLM_ENCODING_FILE", src}, {"AIRO_VLLM_ENCODING_TARGET", "/opt/enc.py"}])
+
+      assert rank_launch(log, "0") =~ "-v #{src}:/opt/enc.py:ro"
+    end
+
+    test "refuses to launch when the source is missing", %{dir: dir, log: log} do
+      {out, 78} = run(dir, [{"AIRO_VLLM_ENCODING_FILE", Path.join(dir, "nope.py")}])
+
+      assert out =~ "not found"
+      # Bails before touching the runtime at all, so no stub ever ran — better a
+      # dead slot than one silently encoding prompts the wrong way.
+      refute File.exists?(log)
+    end
+
+    test "'none' sentinel and unset both mean no mount", %{dir: dir, log: log} do
+      {_out, 0} = run(dir, [{"AIRO_VLLM_ENCODING_FILE", "none"}])
+      {_out, 0} = run(dir, [])
+
+      for line <- lines(log), do: refute(line =~ @target)
+    end
+  end
 end

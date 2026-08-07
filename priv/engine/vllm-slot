@@ -34,6 +34,17 @@
 #                            the proven sparky container runs with --ipc=host)
 #   AIRO_VLLM_CONTAINER_ENV  newline-separated K=V pairs added as -e flags (from
 #                            the profile's container_env — both ranks in cluster mode)
+#   AIRO_VLLM_ENCODING_FILE  host path to a tokenizer encoding module, bind-mounted
+#                            read-only over the image's copy on BOTH ranks. Some
+#                            checkpoints ship a newer encoding than the runtime image
+#                            carries (DeepSeek-V4-Flash-0731 vs anemll 0.1.1: without
+#                            it the reasoning_effort tiers collapse to one). Upstream's
+#                            compose `cp`s the file in before serving; mounting is the
+#                            same effect without wrapping the entrypoint. "none"/unset
+#                            disables. A missing source is fatal, not silent — a
+#                            half-applied encoding would skew the ranks.
+#   AIRO_VLLM_ENCODING_TARGET  in-container destination (default: vLLM's
+#                            tokenizers/deepseek_v4_encoding.py)
 #
 # Cluster mode (AIRO_VLLM_CLUSTER=1, set by the adapter when profile.nnodes > 1):
 # this process runs rank 0 locally AND rank 1 on the worker host over SSH, so
@@ -66,6 +77,20 @@ CMD_PREFIX="${AIRO_VLLM_CMD_PREFIX-vllm}"
 # Optional ENTRYPOINT override (for images that bake `vllm serve` into ENTRYPOINT).
 entrypoint_args=()
 [ -n "${AIRO_VLLM_ENTRYPOINT:-}" ] && entrypoint_args=(--entrypoint "$AIRO_VLLM_ENTRYPOINT")
+
+# Optional tokenizer-encoding override (see header). Read-only file bind-mount over
+# the image's copy — no entrypoint wrapping, and idempotent across load/swap. Same
+# "none" sentinel as CMD_PREFIX: the BEAM cannot pass an empty env var through.
+encoding_args=()
+ENCODING_FILE="${AIRO_VLLM_ENCODING_FILE:-}"
+[ "$ENCODING_FILE" = "none" ] && ENCODING_FILE=""
+if [ -n "$ENCODING_FILE" ]; then
+  if [ ! -f "$ENCODING_FILE" ]; then
+    echo "vllm-slot: AIRO_VLLM_ENCODING_FILE not found: $ENCODING_FILE" >&2
+    exit 78
+  fi
+  encoding_args=(-v "${ENCODING_FILE}:${AIRO_VLLM_ENCODING_TARGET:-/usr/local/lib/python3.12/dist-packages/vllm/tokenizers/deepseek_v4_encoding.py}:ro")
+fi
 
 # GPU passthrough differs by runtime; both go through nvidia-container-toolkit.
 if [ -n "${AIRO_GPU_ARGS:-}" ]; then
@@ -125,6 +150,7 @@ if [ "${AIRO_VLLM_CLUSTER:-0}" != "1" ]; then
     -e HF_HUB_OFFLINE=1 \
     "${env_args[@]}" \
     -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
+    "${encoding_args[@]}" \
     "${port_args[@]}" \
     "$VLLM_IMAGE" $CMD_PREFIX "$@"
 fi
@@ -144,6 +170,13 @@ model_dir=""
 if [ -n "$model_dir" ] && ! "${SSH[@]}" "test -d $(printf '%q' "$model_dir")"; then
   echo "vllm-slot: model snapshot missing on worker ($AIRO_VLLM_WORKER_SSH): $model_dir" >&2
   echo "vllm-slot: sync it first, e.g. rsync -a <repo-dir> worker:<model-root>/" >&2
+  exit 78
+fi
+
+# Same for the encoding override: rank 1 must mount the identical file, or the two
+# ranks would encode prompts differently. Fail here rather than mid-rendezvous.
+if [ -n "$ENCODING_FILE" ] && ! "${SSH[@]}" "test -f $(printf '%q' "$ENCODING_FILE")"; then
+  echo "vllm-slot: encoding file missing on worker ($AIRO_VLLM_WORKER_SSH): $ENCODING_FILE" >&2
   exit 78
 fi
 
@@ -187,6 +220,7 @@ remote_cmd=("$RT" run --rm --name "$name"
   -e "VLLM_HOST_IP=${AIRO_VLLM_WORKER_IP:-}"
   "${env_args[@]}"
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro"
+  "${encoding_args[@]}"
   "$VLLM_IMAGE")
 [ -n "$CMD_PREFIX" ] && remote_cmd+=("$CMD_PREFIX")
 remote_cmd+=("${worker_args[@]}")
@@ -207,5 +241,6 @@ remote_cmd+=("${worker_args[@]}")
   -e "VLLM_HOST_IP=$AIRO_VLLM_MASTER_IP" \
   "${env_args[@]}" \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
+  "${encoding_args[@]}" \
   "$VLLM_IMAGE" $CMD_PREFIX "$@" &
 wait $!

@@ -259,7 +259,8 @@ defmodule AiroAgent.Engine.Vllm do
   defp wrapper_overrides(profile) do
     [
       {"AIRO_VLLM_ENTRYPOINT", profile[:entrypoint]},
-      {"AIRO_VLLM_CMD_PREFIX", cmd_prefix(profile[:cmd_prefix])}
+      {"AIRO_VLLM_CMD_PREFIX", cmd_prefix(profile[:cmd_prefix])},
+      {"AIRO_VLLM_ENCODING_FILE", profile[:encoding_file]}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
@@ -319,7 +320,7 @@ defmodule AiroAgent.Engine.Vllm do
       ctx parallel extra_argv disable_thinking
       tensor_parallel_size gpu_memory_utilization dtype quantization
       kv_cache_dtype trust_remote_code
-      nnodes image container_env entrypoint cmd_prefix
+      nnodes image container_env entrypoint cmd_prefix encoding_file
     )a
   end
 
