@@ -4,7 +4,7 @@
   "profile": {
     "image": "vllm/vllm-openai:v0.26.0",
     "ctx": 51200,
-    "parallel": 5,
+    "parallel": 4,
     "tensor_parallel_size": 1,
     "gpu_memory_utilization": 0.92,
     "dtype": "auto",
