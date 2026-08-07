@@ -34,6 +34,45 @@ knobs.
 | --- | --- | --- |
 | `dspark-0731.json` | `sparky` (+ `sparky2` as rank 1) | **Current.** Official `DeepSeek-V4-Flash-0731`, which ships DSpark folded in — there is no separate `-0731-DSpark` repo. `num_speculative_tokens: 5`, see below. |
 | `dspark.json` | `sparky` (+ `sparky2` as rank 1) | Fallback: the abliterated preview checkpoint, still on disk on both Sparks. Kept for the uncensored variant; `k` here is 3 (bump it to 5 if you fall back — see below). |
+| `forge-qwen36.json` | `forge` | Single-host vLLM on one RTX 5090. `--attention-backend FLASHINFER` is load-bearing — see below. |
+
+## `forge-qwen36.json`: keep `--attention-backend FLASHINFER`
+
+Measured 2026-08-07 on forge's 5090 (sm_120), Qwen3.6-35B-A3B — a hybrid with 10
+full-attention and 30 linear-attention (GDN) layers. Decode steps/s against
+prompt depth, everything else held identical:
+
+| prompt tokens | `TRITON_ATTN` | `FLASHINFER` |
+| --- | --- | --- |
+| 590 | 95.5/s | 106.2/s |
+| 9,171 | 80.4/s | 104.9/s |
+| 42,972 | **40.3/s** | **105.0/s** |
+
+Triton loses 58% of its decode rate as context deepens; FlashInfer loses 1%. It
+is not speculative decoding — tokens/step is flat at ~2.4 for both — and not
+paging: the forced 2128-token attention block size is identical in both runs.
+FlashInfer wins every measured cell at c=1 and c=4, short and long, by up to
+166%.
+
+**The trap:** enabling MTP forces FlashInfer down from `FULL_AND_PIECEWISE` to
+`PIECEWISE` cudagraphs, because it declares only `UNIFORM_SINGLE_TOKEN_DECODE`
+and spec-decode needs `UNIFORM_BATCH` (`vllm/config/compilation.py`).
+`TRITON_ATTN` declares `ALWAYS` and so *keeps* full graphs — which reads like
+the better choice and is not. Full graphs are worth ~8% at c=4; the Triton
+kernel costs up to 166% at depth. Do not "fix" the PIECEWISE warning by
+switching back.
+
+`--disable-hybrid-kv-cache-manager` is **not usable** on this model: it aborts
+with `Hybrid KV cache manager is disabled but failed to convert the KV cache
+specs to one unified type`, because the full-attention and GDN layers cannot
+share one pool. That also makes the 2128-token attention page permanent.
+
+Model choice is constrained by VRAM: the `-Fast` build is 22.02 GiB and yields
+**273,989 KV tokens = 5.35x concurrency at 51,200**. Plain
+`unsloth/…-NVFP4` is 24.67 GiB and drops that to 2.16x; `nvidia/…-NVFP4` is
+lighter still but ships **no MTP module** and its `modelopt` format forces the
+MARLIN MoE backend (~2.5x slower per unsloth). Never set `--moe-backend`
+by hand — compressed-tensors auto-selects `FLASHINFER_CUTLASS`.
 
 Both are two-host TP loads (`nnodes: 2`). Reloading is a **cluster** operation:
 the head's wrapper starts rank 1 on the worker over SSH, so posting to sparky
