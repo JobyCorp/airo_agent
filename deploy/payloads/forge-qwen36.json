@@ -4,7 +4,7 @@
   "profile": {
     "image": "vllm/vllm-openai:v0.26.0",
     "ctx": 51200,
-    "parallel": 4,
+    "parallel": 5,
     "tensor_parallel_size": 1,
     "gpu_memory_utilization": 0.92,
     "dtype": "auto",
@@ -18,12 +18,15 @@
       "VLLM_USE_FLASHINFER_SAMPLER": "1"
     },
     "extra_argv": [
-      "--attention-backend", "FLASHINFER",
+      "--attention-backend",
+      "FLASHINFER",
       "--enable-prefix-caching",
       "--enable-chunked-prefill",
       "--async-scheduling",
-      "--max-num-batched-tokens", "8192",
-      "--speculative-config", "{\"method\":\"mtp\",\"num_speculative_tokens\":2,\"moe_backend\":\"triton\"}"
+      "--max-num-batched-tokens",
+      "8192",
+      "--speculative-config",
+      "{\"method\":\"mtp\",\"num_speculative_tokens\":2,\"moe_backend\":\"triton\"}"
     ]
   }
 }

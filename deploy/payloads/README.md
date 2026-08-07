@@ -34,7 +34,7 @@ knobs.
 | --- | --- | --- |
 | `dspark-0731.json` | `sparky` (+ `sparky2` as rank 1) | **Current.** Official `DeepSeek-V4-Flash-0731`, which ships DSpark folded in — there is no separate `-0731-DSpark` repo. `num_speculative_tokens: 5`, see below. |
 | `dspark.json` | `sparky` (+ `sparky2` as rank 1) | Fallback: the abliterated preview checkpoint, still on disk on both Sparks. Kept for the uncensored variant; `k` here is 3 (bump it to 5 if you fall back — see below). |
-| `forge-qwen36.json` | `forge` | Single-host vLLM on one RTX 5090. `--attention-backend FLASHINFER` is load-bearing — see below. |
+| `forge-qwen36.json` | `forge` | Single-host vLLM on one RTX 5090. `--attention-backend FLASHINFER` is load-bearing — see below. `parallel: 5`. |
 
 ## `forge-qwen36.json`: keep `--attention-backend FLASHINFER`
 
@@ -66,6 +66,28 @@ switching back.
 with `Hybrid KV cache manager is disabled but failed to convert the KV cache
 specs to one unified type`, because the full-attention and GDN layers cannot
 share one pool. That also makes the 2128-token attention page permanent.
+
+### `parallel: 5`
+
+The KV pool holds **5.35x** full-depth streams at `ctx: 51200` (273,989 tokens),
+and that figure is unchanged between `parallel: 4` and `5` — raising
+`max_num_seqs` does not shrink the pool here. Five 43K streams put 214,760
+tokens in flight (78% of the pool) with no preemption: TTFTs come up as an even
+ladder ~2s apart, not the bimodal fast/slow split that means admission queueing.
+
+Whether 5 helps depends entirely on prompt length, measured 2026-08-07 warm:
+
+| | `parallel: 4` | `parallel: 5` |
+| --- | --- | --- |
+| short (~1.8K) aggregate | 728 tok/s | **893 tok/s** |
+| long (~43K) aggregate | 107 tok/s | 103 tok/s |
+| long tail TTFT | 8.3s | 11.4s |
+
+Short prompts are decode-bound, so the extra stream is worth +23%. Long prompts
+are **prefill**-bound — the TTFT ladder is prefill serializing — so a fifth
+stream only adds 43K more tokens to the queue and costs 37% tail latency for no
+throughput. Worth it for mixed agent traffic; drop back to 4 if this slot ever
+serves mostly deep-context work.
 
 Model choice is constrained by VRAM: the `-Fast` build is 22.02 GiB and yields
 **273,989 KV tokens = 5.35x concurrency at 51,200**. Plain
