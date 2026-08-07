@@ -136,8 +136,29 @@ fi
 # vLLM needs host IPC (shared memory) + raised locked-memory/stack ulimits.
 read -r -a vllm_run_args <<<"${AIRO_VLLM_RUN_ARGS:---ipc=host --ulimit memlock=-1 --ulimit stack=67108864}"
 
-# Idempotent: clear any stale container holding this slot before (re)launching.
-"$RT" rm -f "$name" >/dev/null 2>&1 || true
+# Idempotent: clear any stale container holding this slot before (re)launching,
+# then WAIT for the runtime to actually release the name.
+#
+# `rm -f` returns before the name is free: when the container being replaced is
+# still finishing its own `--rm` teardown, the name stays claimed for a beat and
+# the relaunch dies with "name is already in use" (exit 125). Fleet classifies
+# that as a failed start rather than a retryable blip, so a routine model swap
+# surfaces as a crash — and swap is precisely the hot path here. Poll instead of
+# assuming the remove landed.
+release_name_local() {
+  local i
+  for ((i = 0; i < 100; i++)); do
+    "$RT" rm -f "$name" >/dev/null 2>&1 || true
+    "$RT" inspect "$name" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+release_name_local || {
+  echo "vllm-slot: container name $name still held after 10s; refusing to launch" >&2
+  exit 125
+}
 
 if [ "${AIRO_VLLM_CLUSTER:-0}" != "1" ]; then
   # Replace this process with the runtime so muontrap supervises it directly. The
@@ -205,8 +226,14 @@ cleanup() {
 trap 'cleanup; exit 143' TERM INT
 trap cleanup EXIT
 
-# Clear a stale rank-1 holding the name on the worker, then launch it.
-"${SSH[@]}" "$RT rm -f $name" >/dev/null 2>&1 || true
+# Clear a stale rank-1 holding the name on the worker, then launch it. Same
+# name-release race as rank 0 above, run as ONE remote loop so a contended swap
+# costs a single ssh round trip rather than one per poll. POSIX sh, not bash —
+# the worker's login shell is whatever it is.
+"${SSH[@]}" "i=0; while [ \$i -lt 100 ]; do $RT rm -f $name >/dev/null 2>&1 || true; $RT inspect $name >/dev/null 2>&1 || exit 0; sleep 0.1; i=\$((i+1)); done; exit 1" || {
+  echo "vllm-slot: container name $name still held on $AIRO_VLLM_WORKER_SSH after 10s" >&2
+  exit 125
+}
 
 remote_cmd=("$RT" run --rm --name "$name"
   "${gpu_args[@]}"

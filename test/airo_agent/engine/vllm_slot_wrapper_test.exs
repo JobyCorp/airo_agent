@@ -18,9 +18,21 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
 
     # Stubs record their argv and exit 0. `ssh` also stands in for the worker's
     # model-dir precheck, which must succeed for the launch to proceed.
+    #
+    # `inspect` is the exception: it must FAIL, modelling a container that is
+    # gone. The wrapper polls it to confirm the runtime released the slot name
+    # before relaunching, so a stub that reports the name as still present would
+    # spin the poll for its full 10s timeout and then refuse to launch.
     for name <- ~w(fakert ssh) do
       path = Path.join(dir, name)
-      File.write!(path, "#!/usr/bin/env bash\necho \"#{name} $*\" >> #{log}\nexit 0\n")
+
+      File.write!(path, """
+      #!/usr/bin/env bash
+      echo "#{name} $*" >> #{log}
+      [ "${1:-}" = inspect ] && exit 1
+      exit 0
+      """)
+
       File.chmod!(path, 0o755)
     end
 
@@ -54,17 +66,41 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
     Enum.find(lines(log), &(String.starts_with?(&1, "fakert ") and &1 =~ "run --rm"))
   end
 
-  describe "cluster mode" do
-    @cluster_env [
-      {"AIRO_VLLM_CLUSTER", "1"},
-      {"AIRO_VLLM_WORKER_SSH", "jody@192.168.100.11"},
-      {"AIRO_VLLM_MASTER_IP", "192.168.100.10"},
-      {"AIRO_VLLM_NCCL_IF", "enP2p1s0f1np1"},
-      {"AIRO_VLLM_CLUSTER_ID", "dep-7f3a1c2b"},
-      {"AIRO_VLLM_NNODES", "2"},
-      {"AIRO_VLLM_SERVED_MODEL", "org/big:fp8"}
-    ]
+  @cluster_env [
+    {"AIRO_VLLM_CLUSTER", "1"},
+    {"AIRO_VLLM_WORKER_SSH", "jody@192.168.100.11"},
+    {"AIRO_VLLM_MASTER_IP", "192.168.100.10"},
+    {"AIRO_VLLM_NCCL_IF", "enP2p1s0f1np1"},
+    {"AIRO_VLLM_CLUSTER_ID", "dep-7f3a1c2b"},
+    {"AIRO_VLLM_NNODES", "2"},
+    {"AIRO_VLLM_SERVED_MODEL", "org/big:fp8"}
+  ]
 
+  describe "slot name release" do
+    test "waits for the runtime to free the name before launching", %{dir: dir, log: log} do
+      {_out, 0} = run(dir, [])
+
+      calls = lines(log)
+      inspect_at = Enum.find_index(calls, &(&1 == "fakert inspect airo-slot-8081"))
+      launch_at = Enum.find_index(calls, &(String.starts_with?(&1, "fakert run --rm")))
+
+      # `rm -f` returns before the name is actually free, so the wrapper must
+      # confirm via `inspect` — and must do it BEFORE `run`, or the relaunch
+      # races the previous container's teardown and dies with exit 125.
+      assert inspect_at, "wrapper never polled `inspect` to confirm the name was released"
+      assert launch_at, "wrapper never launched the container"
+      assert inspect_at < launch_at, "polled for the name only AFTER launching"
+    end
+
+    test "worker rank polls the name on the worker too", %{dir: dir, log: log} do
+      {_out, 0} = run(dir, @cluster_env)
+
+      assert Enum.any?(lines(log), &(String.starts_with?(&1, "ssh ") and &1 =~ "inspect airo-slot-8081")),
+             "rank 1 never waited for the worker to release the slot name"
+    end
+  end
+
+  describe "cluster mode" do
     test "stamps cluster identity on both ranks", %{dir: dir, log: log} do
       {_out, 0} = run(dir, @cluster_env)
 
