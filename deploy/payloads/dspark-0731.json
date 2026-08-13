@@ -84,6 +84,9 @@
     "image": "ghcr.io/anemll/dspark-vllm-gx10:0.1.1",
     "kv_cache_dtype": "nvfp4_ds_mla",
     "nnodes": 2,
+    "overlay_files": {
+      "/home/jody/airo-agent-overlays/flashmla_sparse.py": "/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashmla_sparse.py"
+    },
     "parallel": 6,
     "tensor_parallel_size": 2,
     "trust_remote_code": true
