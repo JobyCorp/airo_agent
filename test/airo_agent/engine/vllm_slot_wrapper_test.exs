@@ -82,7 +82,7 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
 
       calls = lines(log)
       inspect_at = Enum.find_index(calls, &(&1 == "fakert inspect airo-slot-8081"))
-      launch_at = Enum.find_index(calls, &(String.starts_with?(&1, "fakert run --rm")))
+      launch_at = Enum.find_index(calls, &String.starts_with?(&1, "fakert run --rm"))
 
       # `rm -f` returns before the name is actually free, so the wrapper must
       # confirm via `inspect` — and must do it BEFORE `run`, or the relaunch
@@ -95,7 +95,10 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
     test "worker rank polls the name on the worker too", %{dir: dir, log: log} do
       {_out, 0} = run(dir, @cluster_env)
 
-      assert Enum.any?(lines(log), &(String.starts_with?(&1, "ssh ") and &1 =~ "inspect airo-slot-8081")),
+      assert Enum.any?(
+               lines(log),
+               &(String.starts_with?(&1, "ssh ") and &1 =~ "inspect airo-slot-8081")
+             ),
              "rank 1 never waited for the worker to release the slot name"
     end
   end
@@ -203,6 +206,87 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
       {_out, 0} = run(dir, [])
 
       for line <- lines(log), do: refute(line =~ @target)
+    end
+  end
+
+  # `encoding_file` mounts one well-known path; an image can need several patched
+  # files at once (anemll 0.1.1: the 0731 encoding AND the nvfp4_ds_mla dispatch
+  # fix). Same both-ranks / fail-loud contract, because a partial overlay leaves
+  # the ranks running different code — which only shows up as divergent output.
+  describe "file overlays" do
+    defp overlay_src(dir, name) do
+      path = Path.join(dir, name)
+      File.write!(path, "# stub\n")
+      path
+    end
+
+    test "mounts every entry read-only", %{dir: dir, log: log} do
+      a = overlay_src(dir, "flashmla_sparse.py")
+      b = overlay_src(dir, "scheduler.py")
+
+      {_out, 0} =
+        run(dir, [{"AIRO_VLLM_OVERLAY_FILES", "#{a}:/opt/a.py\n#{b}:/opt/b.py"}])
+
+      launch = rank_launch(log, "0")
+      assert launch =~ "-v #{a}:/opt/a.py:ro"
+      assert launch =~ "-v #{b}:/opt/b.py:ro"
+    end
+
+    test "reaches both ranks in cluster mode", %{dir: dir, log: log} do
+      src = overlay_src(dir, "flashmla_sparse.py")
+
+      {_out, 0} =
+        run(dir, [
+          {"AIRO_VLLM_CLUSTER", "1"},
+          {"AIRO_VLLM_WORKER_SSH", "jody@192.168.100.11"},
+          {"AIRO_VLLM_MASTER_IP", "192.168.100.10"},
+          {"AIRO_VLLM_NCCL_IF", "enP2p1s0f1np1"},
+          {"AIRO_VLLM_OVERLAY_FILES", "#{src}:/opt/a.py"}
+        ])
+
+      # Rank 1's mount has to survive `printf '%q '` on the way to SSH.
+      for rank <- ~w(0 1), do: assert(rank_launch(log, rank) =~ "#{src}:/opt/a.py:ro")
+    end
+
+    test "coexists with an encoding override", %{dir: dir, log: log} do
+      enc = encoding_file(dir)
+      src = overlay_src(dir, "flashmla_sparse.py")
+
+      {_out, 0} =
+        run(dir, [
+          {"AIRO_VLLM_ENCODING_FILE", enc},
+          {"AIRO_VLLM_OVERLAY_FILES", "#{src}:/opt/a.py"}
+        ])
+
+      launch = rank_launch(log, "0")
+      assert launch =~ "-v #{enc}:#{@target}:ro"
+      assert launch =~ "-v #{src}:/opt/a.py:ro"
+    end
+
+    test "refuses to launch when any source is missing", %{dir: dir, log: log} do
+      present = overlay_src(dir, "present.py")
+      missing = Path.join(dir, "nope.py")
+
+      {out, 78} =
+        run(dir, [{"AIRO_VLLM_OVERLAY_FILES", "#{present}:/opt/a.py\n#{missing}:/opt/b.py"}])
+
+      assert out =~ "not found"
+      # One good entry must not buy a partial mount — bail before the runtime runs.
+      refute File.exists?(log)
+    end
+
+    test "refuses a malformed entry", %{dir: dir, log: log} do
+      {out, 78} = run(dir, [{"AIRO_VLLM_OVERLAY_FILES", "/tmp/no-target-here"}])
+
+      assert out =~ "not host:target"
+      refute File.exists?(log)
+    end
+
+    test "'none' sentinel and unset both mean no mount", %{dir: dir, log: log} do
+      {_out, 0} = run(dir, [{"AIRO_VLLM_OVERLAY_FILES", "none"}])
+      {_out, 0} = run(dir, [])
+
+      for line <- lines(log), do: refute(line =~ "/opt/a.py")
     end
   end
 end

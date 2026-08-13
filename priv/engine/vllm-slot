@@ -45,6 +45,14 @@
 #                            half-applied encoding would skew the ranks.
 #   AIRO_VLLM_ENCODING_TARGET  in-container destination (default: vLLM's
 #                            tokenizers/deepseek_v4_encoding.py)
+#   AIRO_VLLM_OVERLAY_FILES  newline-separated `host:target` pairs, each bind-mounted
+#                            read-only on BOTH ranks — ENCODING_FILE generalised for
+#                            images needing several patched files at once (anemll
+#                            0.1.1 wants both the 0731 encoding and the
+#                            nvfp4_ds_mla kernel-dispatch fix). Same contract: a
+#                            missing source is fatal, since a half-applied overlay
+#                            leaves the ranks running different code. "none"/unset
+#                            disables.
 #
 # Cluster mode (AIRO_VLLM_CLUSTER=1, set by the adapter when profile.nnodes > 1):
 # this process runs rank 0 locally AND rank 1 on the worker host over SSH, so
@@ -90,6 +98,32 @@ if [ -n "$ENCODING_FILE" ]; then
     exit 78
   fi
   encoding_args=(-v "${ENCODING_FILE}:${AIRO_VLLM_ENCODING_TARGET:-/usr/local/lib/python3.12/dist-packages/vllm/tokenizers/deepseek_v4_encoding.py}:ro")
+fi
+
+# Optional read-only file overlays (see header): newline-separated host:target, one
+# -v each. ENCODING_FILE generalised for images needing several patched files at
+# once. Same contract: read-only, every rank, and a missing source is fatal — a
+# half-applied overlay would leave the ranks running different code.
+overlay_args=()
+OVERLAY_FILES="${AIRO_VLLM_OVERLAY_FILES:-}"
+[ "$OVERLAY_FILES" = "none" ] && OVERLAY_FILES=""
+if [ -n "$OVERLAY_FILES" ]; then
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    src="${line%%:*}"
+    dst="${line#*:}"
+    if [ -z "$src" ] || [ -z "$dst" ] || [ "$src" = "$line" ]; then
+      echo "vllm-slot: AIRO_VLLM_OVERLAY_FILES entry is not host:target: $line" >&2
+      exit 78
+    fi
+    if [ ! -f "$src" ]; then
+      echo "vllm-slot: AIRO_VLLM_OVERLAY_FILES source not found: $src" >&2
+      exit 78
+    fi
+    overlay_args+=(-v "${src}:${dst}:ro")
+  done <<EOF
+$OVERLAY_FILES
+EOF
 fi
 
 # GPU passthrough differs by runtime; both go through nvidia-container-toolkit.
@@ -172,6 +206,7 @@ if [ "${AIRO_VLLM_CLUSTER:-0}" != "1" ]; then
     "${env_args[@]}" \
     -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
     "${encoding_args[@]}" \
+    "${overlay_args[@]}" \
     "${port_args[@]}" \
     "$VLLM_IMAGE" $CMD_PREFIX "$@"
 fi
@@ -248,6 +283,7 @@ remote_cmd=("$RT" run --rm --name "$name"
   "${env_args[@]}"
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro"
   "${encoding_args[@]}"
+  "${overlay_args[@]}"
   "$VLLM_IMAGE")
 [ -n "$CMD_PREFIX" ] && remote_cmd+=("$CMD_PREFIX")
 remote_cmd+=("${worker_args[@]}")
@@ -269,5 +305,6 @@ remote_cmd+=("${worker_args[@]}")
   "${env_args[@]}" \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
   "${encoding_args[@]}" \
+  "${overlay_args[@]}" \
   "$VLLM_IMAGE" $CMD_PREFIX "$@" &
 wait $!

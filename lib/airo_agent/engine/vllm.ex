@@ -128,7 +128,10 @@ defmodule AiroAgent.Engine.Vllm do
             # Labelled onto the container in cluster mode so the worker's agent
             # can name the model of a rank it did not start.
             {"AIRO_VLLM_SERVED_MODEL", model.id}
-          ] ++ cluster_env ++ container_env_pairs(profile) ++ wrapper_overrides(profile),
+          ] ++
+            cluster_env ++
+            container_env_pairs(profile) ++
+            overlay_files_pairs(profile) ++ wrapper_overrides(profile),
         readiness: {:http_get, "/health"}
       }
 
@@ -249,6 +252,28 @@ defmodule AiroAgent.Engine.Vllm do
 
   defp container_env_pairs(_profile), do: []
 
+  # Read-only file overlays: host path => in-container destination, newline-joined
+  # `host:target` (docker's own -v syntax), one -v per line on both ranks. This is
+  # `encoding_file` generalised — that key mounts ONE well-known path, while an
+  # image can need several patched files at once (e.g. anemll 0.1.1 needs both the
+  # 0731 tokenizer encoding and the nvfp4_ds_mla kernel-dispatch fix). Same
+  # semantics as encoding_file deliberately: read-only, applied to every rank, and
+  # a missing source is fatal in the wrapper rather than silently skipped, because
+  # a half-applied overlay makes the ranks disagree. Sorted for a deterministic
+  # argv, since profile equality drives Fleet's idempotent-load check.
+  defp overlay_files_pairs(%{overlay_files: files})
+       when is_map(files) and map_size(files) > 0 do
+    joined =
+      files
+      |> Enum.map(fn {host, target} -> "#{host}:#{target}" end)
+      |> Enum.sort()
+      |> Enum.join("\n")
+
+    [{"AIRO_VLLM_OVERLAY_FILES", joined}]
+  end
+
+  defp overlay_files_pairs(_profile), do: []
+
   # A profile image may need different wrapper plumbing than the host default —
   # e.g. images that bake `vllm serve` into ENTRYPOINT want entrypoint: "vllm"
   # + cmd_prefix: "" so `serve <dir> …` runs exactly once (see the vllm-slot
@@ -320,7 +345,7 @@ defmodule AiroAgent.Engine.Vllm do
       ctx parallel extra_argv disable_thinking
       tensor_parallel_size gpu_memory_utilization dtype quantization
       kv_cache_dtype trust_remote_code
-      nnodes image container_env entrypoint cmd_prefix encoding_file
+      nnodes image container_env entrypoint cmd_prefix encoding_file overlay_files
     )a
   end
 
