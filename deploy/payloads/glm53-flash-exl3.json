@@ -9,7 +9,7 @@
       "EXL3_TEMP_ROWS_FUSED": "128",
       "FLASHINFER_CUDA_ARCH_LIST": "12.1a",
       "FLASHINFER_DISABLE_VERSION_CHECK": "1",
-      "GLM53_MIXED_PREFILL_CHUNK": "skip",
+      "GLM53_MIXED_PREFILL_CHUNK": "1024",
       "GLM53_SUPPRESS_STOPS_IN_REASONING": "1",
       "NCCL_CROSS_NIC": "0",
       "NCCL_CUMEM_ENABLE": "0",
@@ -30,7 +30,7 @@
       "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS": "1",
       "VLLM_NO_USAGE_STATS": "1"
     },
-    "ctx": 1000000,
+    "ctx": 524288,
     "dtype": "auto",
     "entrypoint": "bash",
     "extra_argv": [
