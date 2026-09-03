@@ -19,7 +19,10 @@ for p in \
     patch_scheduler_decode_floor \
     patch_glm5_drafter_group \
     patch_hybrid_prefix_hit \
-    patch_xgrammar_termination; do
+    patch_xgrammar_termination \
+    patch_kpool_tail_slotmap \
+    patch_spinwait \
+    patch_indexer_workspace; do
     python3 "/opt/glm53/${p}.py"
 done
 

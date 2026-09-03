@@ -4,12 +4,15 @@
     "cmd_prefix": "/opt/glm53/airo-entry.sh",
     "container_env": {
       "DO_NOT_TRACK": "1",
+      "EXL3_FAT_KERNEL": "1",
       "EXL3_FUSED_MOE": "1",
       "EXL3_MOE_ROW_TILE": "0",
       "EXL3_TEMP_ROWS_FUSED": "128",
       "FLASHINFER_CUDA_ARCH_LIST": "12.1a",
       "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+      "GLM53_INDEXER_WORKSPACE": "rightsize",
       "GLM53_MIXED_PREFILL_CHUNK": "1024",
+      "GLM53_SPINWAIT_MS": "16",
       "GLM53_SUPPRESS_STOPS_IN_REASONING": "1",
       "NCCL_CROSS_NIC": "0",
       "NCCL_CUMEM_ENABLE": "0",
@@ -36,6 +39,8 @@
     "extra_argv": [
       "--max-num-batched-tokens",
       "2048",
+      "--long-prefill-token-threshold",
+      "1024",
       "--enable-prefix-caching",
       "--no-enable-flashinfer-autotune",
       "--cudagraph-capture-sizes",
@@ -60,7 +65,7 @@
       "{\"method\":\"dflash\",\"model\":\"/home/jody/.cache/huggingface/hub/models--incoai--GLM-5.3-Flash-DFlash2/snapshots/dc77ff1c99eeb2df044ee3d4f0094eb033fee410\",\"num_speculative_tokens\":7,\"kv_cache_dtype\":\"auto\",\"draft_sample_method\":\"probabilistic\",\"rejection_sample_method\":\"standard\",\"draft_tensor_parallel_size\":1}"
     ],
     "gpu_memory_utilization": 0.87,
-    "image": "ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3",
+    "image": "glm53-flash-sm121:eb0469fb",
     "kv_cache_dtype": "fp8",
     "nnodes": 2,
     "overlay_files": {
@@ -69,7 +74,10 @@
       "/home/jody/airo-agent-overlays/glm53/patch_glm5_drafter_group.py": "/opt/glm53/patch_glm5_drafter_group.py",
       "/home/jody/airo-agent-overlays/glm53/patch_glm_video_placeholders.py": "/opt/glm53/patch_glm_video_placeholders.py",
       "/home/jody/airo-agent-overlays/glm53/patch_hybrid_prefix_hit.py": "/opt/glm53/patch_hybrid_prefix_hit.py",
+      "/home/jody/airo-agent-overlays/glm53/patch_indexer_workspace.py": "/opt/glm53/patch_indexer_workspace.py",
+      "/home/jody/airo-agent-overlays/glm53/patch_kpool_tail_slotmap.py": "/opt/glm53/patch_kpool_tail_slotmap.py",
       "/home/jody/airo-agent-overlays/glm53/patch_scheduler_decode_floor.py": "/opt/glm53/patch_scheduler_decode_floor.py",
+      "/home/jody/airo-agent-overlays/glm53/patch_spinwait.py": "/opt/glm53/patch_spinwait.py",
       "/home/jody/airo-agent-overlays/glm53/patch_suppress_stops_in_reasoning.py": "/opt/glm53/patch_suppress_stops_in_reasoning.py",
       "/home/jody/airo-agent-overlays/glm53/patch_xgrammar_termination.py": "/opt/glm53/patch_xgrammar_termination.py"
     },
