@@ -30,3 +30,6 @@ airo_agent-*.tar.gz
 /deploy/hosts/*.env
 !/deploy/hosts/example.env
 
+
+# Per-user Claude Code settings (project settings.json stays tracked).
+.claude/settings.local.json
