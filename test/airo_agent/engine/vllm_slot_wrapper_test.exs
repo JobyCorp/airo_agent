@@ -232,6 +232,19 @@ defmodule AiroAgent.Engine.VllmSlotWrapperTest do
       assert launch =~ "-v #{b}:/opt/b.py:ro"
     end
 
+    test "mounts a directory source as-is", %{dir: dir, log: log} do
+      # A recipe's whole patches/ tree in one entry — the DSpark recipe applies a
+      # dozen hotfix scripts at container start, and one dir mount beats one
+      # entry per file. Docker's -v takes a directory the same way as a file.
+      patches = Path.join(dir, "patches")
+      File.mkdir_p!(patches)
+      File.write!(Path.join(patches, "hotfix.py"), "")
+
+      {_out, 0} = run(dir, [{"AIRO_VLLM_OVERLAY_FILES", "#{patches}:/opt/dspark-patches"}])
+
+      assert rank_launch(log, "0") =~ "-v #{patches}:/opt/dspark-patches:ro"
+    end
+
     test "reaches both ranks in cluster mode", %{dir: dir, log: log} do
       src = overlay_src(dir, "flashmla_sparse.py")
 

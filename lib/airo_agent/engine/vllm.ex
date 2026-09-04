@@ -252,7 +252,8 @@ defmodule AiroAgent.Engine.Vllm do
 
   defp container_env_pairs(_profile), do: []
 
-  # Read-only file overlays: host path => in-container destination, newline-joined
+  # Read-only overlays (a file or a directory): host path => in-container
+  # destination, newline-joined
   # `host:target` (docker's own -v syntax), one -v per line on both ranks. This is
   # `encoding_file` generalised — that key mounts ONE well-known path, while an
   # image can need several patched files at once (e.g. anemll 0.1.1 needs both the

@@ -49,7 +49,9 @@
 #                            read-only on BOTH ranks — ENCODING_FILE generalised for
 #                            images needing several patched files at once (anemll
 #                            0.1.1 wants both the 0731 encoding and the
-#                            nvfp4_ds_mla kernel-dispatch fix). Same contract: a
+#                            nvfp4_ds_mla kernel-dispatch fix). A source may be a
+#                            file OR a directory (a recipe's whole patches/ tree
+#                            mounted at /opt/dspark-patches, say). Same contract: a
 #                            missing source is fatal, since a half-applied overlay
 #                            leaves the ranks running different code. "none"/unset
 #                            disables.
@@ -106,10 +108,11 @@ if [ -n "$ENCODING_FILE" ]; then
   encoding_args=(-v "${ENCODING_FILE}:${AIRO_VLLM_ENCODING_TARGET:-/usr/local/lib/python3.12/dist-packages/vllm/tokenizers/deepseek_v4_encoding.py}:ro")
 fi
 
-# Optional read-only file overlays (see header): newline-separated host:target, one
-# -v each. ENCODING_FILE generalised for images needing several patched files at
-# once. Same contract: read-only, every rank, and a missing source is fatal — a
-# half-applied overlay would leave the ranks running different code.
+# Optional read-only overlays (see header): newline-separated host:target, one
+# -v each; a source may be a file or a whole directory. ENCODING_FILE generalised
+# for images needing several patched files at once. Same contract: read-only,
+# every rank, and a missing source is fatal — a half-applied overlay would leave
+# the ranks running different code.
 overlay_args=()
 OVERLAY_FILES="${AIRO_VLLM_OVERLAY_FILES:-}"
 [ "$OVERLAY_FILES" = "none" ] && OVERLAY_FILES=""
@@ -122,7 +125,7 @@ if [ -n "$OVERLAY_FILES" ]; then
       echo "vllm-slot: AIRO_VLLM_OVERLAY_FILES entry is not host:target: $line" >&2
       exit 78
     fi
-    if [ ! -f "$src" ]; then
+    if [ ! -e "$src" ]; then
       echo "vllm-slot: AIRO_VLLM_OVERLAY_FILES source not found: $src" >&2
       exit 78
     fi
