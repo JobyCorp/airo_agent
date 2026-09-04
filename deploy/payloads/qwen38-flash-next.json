@@ -1,0 +1,51 @@
+{
+  "model": "RadixArk/Qwen3.8-Flash-Next-NVFP4:modelopt",
+  "profile": {
+    "cmd_prefix": "",
+    "container_env": {
+      "NCCL_CROSS_NIC": "0",
+      "NCCL_CUMEM_ENABLE": "0",
+      "NCCL_DEBUG": "WARN",
+      "NCCL_IB_ADDR_FAMILY": "AF_INET",
+      "NCCL_IB_DISABLE": "0",
+      "NCCL_IB_ROCE_VERSION_NUM": "2",
+      "NCCL_IGNORE_CPU_AFFINITY": "1",
+      "NCCL_NET": "IB",
+      "NCCL_NVLS_ENABLE": "0",
+      "PLE_QUANT_OVERRIDE": "fp8",
+      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+      "VLLM_ENGINE_READY_TIMEOUT_S": "3600",
+      "VLLM_NO_USAGE_STATS": "1"
+    },
+    "ctx": 1000000,
+    "dtype": "auto",
+    "entrypoint": "vllm",
+    "extra_argv": [
+      "--enable-expert-parallel",
+      "--all2all-backend", "allgather_reducescatter",
+      "--max-num-batched-tokens", "8192",
+      "--load-format", "safetensors",
+      "--safetensors-load-strategy", "lazy",
+      "--enable-chunked-prefill",
+      "--reasoning-parser", "qwen3",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser", "qwen3_coder",
+      "--speculative-config", "{\"method\":\"mtp\",\"num_speculative_tokens\":3}",
+      "--compilation-config", "{\"mode\":0,\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+      "--hf-overrides", "{\"rope_parameters\":{\"rope_type\":\"yarn\",\"factor\":4.0,\"original_max_position_embeddings\":262144}}"
+    ],
+    "gpu_memory_utilization": 0.835,
+    "image": "vllm/vllm-openai:qwen38-flash-next",
+    "kv_cache_dtype": "auto",
+    "nnodes": 2,
+    "overlay_files": {
+      "/home/jody/airo-agent-overlays/qwen38/ple_layer.py": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py"
+    },
+    "parallel": 8,
+    "tensor_parallel_size": 2,
+    "trust_remote_code": false
+  },
+  "slot": 8081
+}
