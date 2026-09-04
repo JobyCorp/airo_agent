@@ -93,7 +93,36 @@ token = System.get_env("AIRO_AGENT_TOKEN")
 
 # Where Airo's /agent socket lives. Set it to push state over the channel
 # (decision #3); unset ⇒ the agent logs events locally (loopback dev).
+#
+# S26: this is the ONE airo allowed to command this host — its *controller*.
+# `AIRO_OBSERVER_SOCKET_URLS` (CSV) names any number of *observers*: airos that
+# receive the same register/slot stream but whose load/unload the agent's
+# controller-side refuses. The shape encodes the invariant — there is no way to
+# configure two controllers. An empty observer list is the same as unset
+# (`AIRO_AGENT_TOKEN`'s empty-string trap, not repeated here).
 airo_socket_url = System.get_env("AIRO_SOCKET_URL")
+
+observer_urls =
+  (System.get_env("AIRO_OBSERVER_SOCKET_URLS") || "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+  |> Enum.uniq()
+  |> Enum.reject(fn url ->
+    if url == airo_socket_url do
+      IO.warn(
+        "AIRO_OBSERVER_SOCKET_URLS repeats AIRO_SOCKET_URL (#{url}); ignoring it as an observer"
+      )
+
+      true
+    else
+      false
+    end
+  end)
+
+airo_endpoints =
+  if(airo_socket_url, do: [%{uri: airo_socket_url, role: :controller}], else: []) ++
+    Enum.map(observer_urls, &%{uri: &1, role: :observer})
 
 # Stable identity for this serving host; should match the Airo Provider name.
 host_id =
@@ -193,4 +222,6 @@ config :airo_agent,
   # set, else just log lifecycle events locally.
   host_id: host_id,
   airo_socket_url: airo_socket_url,
-  notifier: if(airo_socket_url, do: AiroAgent.Notifier.Channel, else: AiroAgent.Notifier.Log)
+  # One channel client per entry (S26): the controller plus every observer.
+  airo_endpoints: airo_endpoints,
+  notifier: if(airo_endpoints != [], do: AiroAgent.Notifier.Channel, else: AiroAgent.Notifier.Log)

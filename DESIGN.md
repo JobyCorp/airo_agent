@@ -269,6 +269,17 @@ host-resident owner). Self-contained OTP release run as a systemd unit alongside
 the engines. Config via env (control port, advertise host, token, model root,
 engine binary/lib, serving-slot ports, Airo socket URL, host id).
 
+### Multiple airos (S26)
+
+An agent pushes to **one controller** (`AIRO_SOCKET_URL`) and any number of
+**observers** (`AIRO_OBSERVER_SOCKET_URLS`), one `Notifier.Channel` per
+endpoint under the same firewall supervisor. The role rides the join
+(`role=`) and the `register` payload (`agent.role`); an observer airo ingests
+the full stream and may route to the slots, but its load/unload are refused
+on the airo side. The config shape is the invariant: two controllers cannot be
+expressed. Agent-side enforcement (per-airo tokens) is deferred. Design note:
+`airo/docs/design/DESIGN-agent-lifecycle-and-roles.md`.
+
 ## Airo-side shape (the consumer)
 
 - **`Agent` entity + `/agents` LiveView** — registered hosts: control_url, GPU,

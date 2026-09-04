@@ -76,7 +76,8 @@ dropped before it arrives.
 | `AIRO_AGENT_MODEL_ROOT` | `~/.cache/huggingface/hub` | Where to scan for GGUF models. |
 | `AIRO_AGENT_HOST_ID` | hostname | Stable id Airo keys the host on. |
 | `AIRO_AGENT_TOKEN` | — | Bearer token for the control API + channel join (optional; independent of exposure). |
-| `AIRO_SOCKET_URL` | — | Airo `/agent` socket; when set, the channel notifier connects and pushes state (else log-only). |
+| `AIRO_SOCKET_URL` | — | The **controller** Airo's `/agent` socket — the one Airo allowed to load/unload here. When set, the channel notifier connects and pushes state (else log-only). |
+| `AIRO_OBSERVER_SOCKET_URLS` | — | CSV of **observer** Airo `/agent` sockets (S26). Each gets the same register/slot stream, joined with `role=observer`; Airo refuses load/unload from an observer. Leave unset (not empty) when none. |
 | `AIRO_VLLM_EXTRA_ARGS` | — | Host-level vLLM tuning argv (e.g. `--enforce-eager --max-num-batched-tokens 2048` on a 16 GB card), used when a load profile has no `extra_argv` of its own. |
 | `AIRO_VLLM_CLUSTER_WORKER_SSH` | — | Two-host TP (head host only): ssh target for the worker GPU host (key auth), e.g. `jody@192.168.100.11`. Set together with `_MASTER_IP` + `_NCCL_IF` to accept `nnodes: 2` loads. |
 | `AIRO_VLLM_CLUSTER_MASTER_IP` | — | Head's fabric IP (torch.distributed rendezvous + rank-0 `VLLM_HOST_IP`). |

@@ -77,7 +77,8 @@ cp deploy/hosts/example.env deploy/hosts/gpu-01.env   # edit, then deploy
 | `AIRO_AGENT_PORT` | ✅ | Control API port (default 4400; `bin/deploy.sh` reads it for the health gate). |
 | `AIRO_AGENT_MODEL_ROOT` | ✅ | Where to scan for GGUF models. |
 | `AIRO_AGENT_TOKEN` | maybe | Bearer auth for control API + channel join. Secret. |
-| `AIRO_SOCKET_URL` | shared | Airo's `/agent` socket; unset ⇒ log-only. |
+| `AIRO_SOCKET_URL` | shared | The controller Airo's `/agent` socket; unset ⇒ log-only. |
+| `AIRO_OBSERVER_SOCKET_URLS` | ✅ | CSV of observer Airo sockets (e.g. a dev airo on the workstation). Observers see everything, command nothing. |
 | `LLAMA_SERVER_BIN` / `LLAMA_CPP_LIB` | ✅ | Engine binary + its shared libs on this host. |
 
 ## Build: per-arch container (the fleet is multi-arch)

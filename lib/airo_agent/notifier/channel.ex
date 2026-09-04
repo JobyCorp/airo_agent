@@ -1,15 +1,23 @@
 defmodule AiroAgent.Notifier.Channel do
   @moduledoc """
-  `slipstream` client that connects to Airo's `/agent` socket and pushes Fleet
-  lifecycle state (decision #3). Airo is the server; this is the client.
+  `slipstream` client that connects to one Airo's `/agent` socket and pushes
+  Fleet lifecycle state (decision #3). Airo is the server; this is the client.
 
-  Implements `AiroAgent.Notifier`: `publish/1` hands the slot event to this
-  process, which pushes it as a `"slot"` message. On join and every rejoin it
+  One process per configured airo endpoint (S26): the **controller**
+  (`AIRO_SOCKET_URL`) and each **observer** (`AIRO_OBSERVER_SOCKET_URLS`). The
+  role rides the socket URL (`role=`) and the `register` payload (`agent.role`),
+  so each airo knows what it was granted. Every process is registered in
+  `AiroAgent.Notifier.Registry` under its URI; `publish/1` fans a slot event out
+  to all of them. Observers reconnect on a longer backoff — a laptop that is
+  closed should not have every GPU host retrying it every ten seconds.
+
+  Implements `AiroAgent.Notifier`: `publish/1` hands the slot event to every
+  channel, which pushes it as a `"slot"` message. On join and every rejoin each
   pushes a full `"register"` (agent identity + all slots), so events dropped
   while disconnected self-heal — Airo reconciles the host from the register.
 
-  Started only when `AIRO_SOCKET_URL` is configured (see `runtime.exs`); otherwise
-  the agent uses `AiroAgent.Notifier.Log` and this process isn't in the tree.
+  Started only when at least one endpoint is configured (see `runtime.exs`);
+  otherwise the agent uses `AiroAgent.Notifier.Log` and no channel is in the tree.
   """
 
   use Slipstream
@@ -20,30 +28,46 @@ defmodule AiroAgent.Notifier.Channel do
   alias AiroAgent.{Fleet, SlotInfo}
   alias AiroAgent.Fleet.Event
 
+  @registry AiroAgent.Notifier.Registry
+  @roles [:controller, :observer]
+
+  # Observers back off harder: the controller is prod and should be back within
+  # seconds; an observer is often a workstation that is simply closed.
+  @controller_backoff [1_000, 2_000, 5_000, 10_000]
+  @observer_backoff [1_000, 5_000, 15_000, 60_000]
+
   def start_link(opts \\ []) do
-    Slipstream.start_link(__MODULE__, config(opts), name: Keyword.get(opts, :name, __MODULE__))
+    uri = opts[:uri] || Application.fetch_env!(:airo_agent, :airo_socket_url)
+    role = Keyword.get(opts, :role, :controller)
+    unless role in @roles, do: raise(ArgumentError, "unknown airo role #{inspect(role)}")
+
+    name = Keyword.get(opts, :name, {:via, Registry, {@registry, uri}})
+    Slipstream.start_link(__MODULE__, {config(uri, role, opts), role, uri}, name: name)
   end
+
+  @doc "Every live channel client's pid — one per configured airo endpoint."
+  def clients, do: Registry.select(@registry, [{{:_, :"$1", :_}, [], [:"$1"]}])
 
   @impl AiroAgent.Notifier
   def publish(%Event{} = event) do
-    case Process.whereis(__MODULE__) do
-      nil -> :ok
-      pid -> send(pid, {:publish, event})
-    end
-
+    Enum.each(clients(), &send(&1, {:publish, event}))
     :ok
   end
 
   @impl Slipstream
-  def init(config) do
+  def init({config, role, uri}) do
     # Self-rescheduling heartbeat (set up once; pushes only while joined).
     Process.send_after(self(), :heartbeat, heartbeat_ms())
-    {:ok, connect!(config)}
+    socket = config |> connect!() |> assign(:role, role) |> assign(:airo, label(uri))
+    {:ok, socket}
   end
 
   @impl Slipstream
   def handle_connect(socket) do
-    Logger.info("agent channel: connected to airo; joining #{topic()}")
+    Logger.info(
+      "agent channel: connected to airo #{socket.assigns.airo} as #{socket.assigns.role}; joining #{topic()}"
+    )
+
     {:ok, join(socket, topic())}
   end
 
@@ -108,7 +132,11 @@ defmodule AiroAgent.Notifier.Channel do
   # --- payloads ---
 
   defp push_register(socket) do
-    payload = %{agent: agent_meta(), slots: Enum.map(Fleet.slots(), &SlotInfo.to_payload/1)}
+    payload = %{
+      agent: agent_meta(socket.assigns.role),
+      slots: Enum.map(Fleet.slots(), &SlotInfo.to_payload/1)
+    }
+
     push(socket, topic(), "register", payload)
   end
 
@@ -137,11 +165,13 @@ defmodule AiroAgent.Notifier.Channel do
   defp serialize_reason(reason) when is_binary(reason), do: reason
   defp serialize_reason(reason), do: inspect(reason)
 
-  defp agent_meta do
+  defp agent_meta(role) do
     %{
       control_url: control_url(),
       version: to_string(Application.spec(:airo_agent, :vsn) || ""),
-      gpu: AiroAgent.GPU.snapshot()
+      gpu: AiroAgent.GPU.snapshot(),
+      # What this airo is to us (S26). Airo persists it and gates load/unload.
+      role: role
     }
   end
 
@@ -156,30 +186,43 @@ defmodule AiroAgent.Notifier.Channel do
   defp topic, do: "agent:" <> host_id()
   defp host_id, do: Application.get_env(:airo_agent, :host_id, "unknown")
 
-  defp config(opts) do
+  defp config(uri, role, opts) do
     [
-      # opts[:uri] short-circuits socket_uri/0 so tests need no AIRO_SOCKET_URL.
-      uri: opts[:uri] || socket_uri(),
-      reconnect_after_msec: [1_000, 2_000, 5_000, 10_000],
+      # In test mode slipstream never dials, so the URI is taken as given.
+      uri: if(opts[:test_mode?], do: uri, else: socket_uri(uri, role)),
+      reconnect_after_msec:
+        if(role == :observer, do: @observer_backoff, else: @controller_backoff),
       rejoin_after_msec: [1_000, 2_000, 5_000],
       test_mode?: Keyword.get(opts, :test_mode?, false)
     ]
   end
 
-  # Build ws(s)://host[:port]/agent/websocket?host_id=..&token=.. — slipstream
-  # appends vsn=2.0.0. Accepts the socket-mount URL with or without /websocket.
-  defp socket_uri do
-    uri = URI.parse(Application.fetch_env!(:airo_agent, :airo_socket_url))
+  @doc """
+  Build `ws(s)://host[:port]/agent/websocket?host_id=..&role=..[&token=..]` from
+  a configured socket URL — slipstream appends `vsn=2.0.0`. Accepts the
+  socket-mount URL with or without `/websocket`. Public for the contract test.
+  """
+  def socket_uri(url, role) when is_binary(url) and role in @roles do
+    uri = URI.parse(url)
     path = uri.path || "/agent"
     path = if String.ends_with?(path, "/websocket"), do: path, else: path <> "/websocket"
 
     query =
       (uri.query || "")
       |> URI.decode_query()
-      |> Map.merge(Map.new([{"host_id", host_id()}] ++ token_param()))
+      |> Map.merge(Map.new([{"host_id", host_id()}, {"role", to_string(role)}] ++ token_param()))
       |> URI.encode_query()
 
     URI.to_string(%{uri | path: path, query: query})
+  end
+
+  # `host[:port]` of an endpoint, for log lines that must tell two airos apart.
+  defp label(url) do
+    case URI.parse(url) do
+      %URI{host: host, port: port} when is_binary(host) and is_integer(port) -> "#{host}:#{port}"
+      %URI{host: host} when is_binary(host) -> host
+      _ -> url
+    end
   end
 
   defp token_param do

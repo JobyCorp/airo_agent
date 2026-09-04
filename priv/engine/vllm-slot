@@ -72,6 +72,12 @@
 # model snapshot synced to the same path there (checked; fails fast if missing).
 set -euo pipefail
 
+# Portability: the fleet runs bash 5, but the wrapper's tests also run on the
+# macOS workstation, whose only bash is 3.2. Under `set -u`, bash < 4.4 treats
+# "${arr[@]}" on an EMPTY array as an unbound variable, so every array that can
+# legitimately be empty is expanded as ${arr[@]+"${arr[@]}"} — identical on
+# both versions, and the only way the test suite runs on a Mac at all.
+
 : "${VLLM_IMAGE:?set VLLM_IMAGE to a vLLM OpenAI-server image}"
 MODEL_ROOT="${AIRO_AGENT_MODEL_ROOT:-$HOME/.cache/huggingface/hub}"
 RT="${AIRO_CONTAINER_RUNTIME:-podman}"
@@ -200,14 +206,14 @@ if [ "${AIRO_VLLM_CLUSTER:-0}" != "1" ]; then
   # i.e. `vllm serve <dir> …`.
   exec "$RT" run --rm --name "$name" \
     "${gpu_args[@]}" \
-    "${entrypoint_args[@]}" \
+    ${entrypoint_args[@]+"${entrypoint_args[@]}"} \
     "${vllm_run_args[@]}" \
     -e HF_HUB_OFFLINE=1 \
-    "${env_args[@]}" \
+    ${env_args[@]+"${env_args[@]}"} \
     -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
-    "${encoding_args[@]}" \
-    "${overlay_args[@]}" \
-    "${port_args[@]}" \
+    ${encoding_args[@]+"${encoding_args[@]}"} \
+    ${overlay_args[@]+"${overlay_args[@]}"} \
+    ${port_args[@]+"${port_args[@]}"} \
     "$VLLM_IMAGE" $CMD_PREFIX "$@"
 fi
 
@@ -272,18 +278,18 @@ trap cleanup EXIT
 
 remote_cmd=("$RT" run --rm --name "$name"
   "${gpu_args[@]}"
-  "${entrypoint_args[@]}"
+  ${entrypoint_args[@]+"${entrypoint_args[@]}"}
   "${vllm_run_args[@]}"
   "${cluster_run_args[@]}"
-  "${cluster_labels[@]}"
+  ${cluster_labels[@]+"${cluster_labels[@]}"}
   --label airo.cluster.rank=1
   -e HF_HUB_OFFLINE=1
   "${nccl_env[@]}"
   -e "VLLM_HOST_IP=${AIRO_VLLM_WORKER_IP:-}"
-  "${env_args[@]}"
+  ${env_args[@]+"${env_args[@]}"}
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro"
-  "${encoding_args[@]}"
-  "${overlay_args[@]}"
+  ${encoding_args[@]+"${encoding_args[@]}"}
+  ${overlay_args[@]+"${overlay_args[@]}"}
   "$VLLM_IMAGE")
 [ -n "$CMD_PREFIX" ] && remote_cmd+=("$CMD_PREFIX")
 remote_cmd+=("${worker_args[@]}")
@@ -294,17 +300,17 @@ remote_cmd+=("${worker_args[@]}")
 # reap rank 1). Exit status is rank 0's, so Fleet still sees the real reason.
 "$RT" run --rm --name "$name" \
   "${gpu_args[@]}" \
-  "${entrypoint_args[@]}" \
+  ${entrypoint_args[@]+"${entrypoint_args[@]}"} \
   "${vllm_run_args[@]}" \
   "${cluster_run_args[@]}" \
-  "${cluster_labels[@]}" \
+  ${cluster_labels[@]+"${cluster_labels[@]}"} \
   --label airo.cluster.rank=0 \
   -e HF_HUB_OFFLINE=1 \
   "${nccl_env[@]}" \
   -e "VLLM_HOST_IP=$AIRO_VLLM_MASTER_IP" \
-  "${env_args[@]}" \
+  ${env_args[@]+"${env_args[@]}"} \
   -v "${MODEL_ROOT}:${MODEL_ROOT}:ro" \
-  "${encoding_args[@]}" \
-  "${overlay_args[@]}" \
+  ${encoding_args[@]+"${encoding_args[@]}"} \
+  ${overlay_args[@]+"${overlay_args[@]}"} \
   "$VLLM_IMAGE" $CMD_PREFIX "$@" &
 wait $!
