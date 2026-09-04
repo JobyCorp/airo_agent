@@ -45,6 +45,8 @@ defmodule AiroAgent.Notifier.ChannelTest do
     assert agent.control_url == "http://192.168.1.5:4400"
     assert Map.has_key?(agent, :version)
     assert Map.has_key?(agent, :gpu)
+    # S26: the role this airo was granted. Default is the controller.
+    assert agent.role == :controller
     # Slots are the host's serving endpoints; each carries the fields airo needs.
     assert is_list(slots)
 
@@ -116,6 +118,70 @@ defmodule AiroAgent.Notifier.ChannelTest do
     send(client, :heartbeat)
 
     assert_push(@topic, "register", %{agent: _, slots: _})
+  end
+
+  describe "observers (S26)" do
+    test "an observer channel registers with role: :observer" do
+      observer =
+        start_supervised!(
+          Supervisor.child_spec(
+            {Channel,
+             [uri: "ws://jobybook.test:4004/agent/websocket", role: :observer, test_mode?: true]},
+            id: :observer
+          )
+        )
+
+      connect_and_assert_join(observer, @topic, _params, :ok)
+      assert_push(@topic, "register", %{agent: %{role: :observer}})
+    end
+
+    test "publish/1 fans a slot event out to every channel", %{client: controller} do
+      observer =
+        start_supervised!(
+          Supervisor.child_spec(
+            {Channel,
+             [uri: "ws://jobybook.test:4004/agent/websocket", role: :observer, test_mode?: true]},
+            id: :observer
+          )
+        )
+
+      connect_and_assert_join(controller, @topic, _params, :ok)
+      assert_push(@topic, "register", _)
+      connect_and_assert_join(observer, @topic, _params, :ok)
+      assert_push(@topic, "register", _)
+
+      assert length(Channel.clients()) == 2
+
+      Channel.publish(%Event{
+        type: :up,
+        port: 8081,
+        resident_model: "m",
+        at: ~U[2026-06-22 00:00:00Z]
+      })
+
+      assert_push(@topic, "slot", %{port: 8081, status: :up})
+      assert_push(@topic, "slot", %{port: 8081, status: :up})
+    end
+
+    test "the socket URI carries host_id and role" do
+      uri = Channel.socket_uri("wss://llm.local.joby.gg/agent", :observer)
+      %URI{path: path, query: query} = URI.parse(uri)
+
+      assert path == "/agent/websocket"
+      assert URI.decode_query(query) == %{"host_id" => "jobycorp", "role" => "observer"}
+
+      # An explicit /websocket mount and a pre-existing query are both kept.
+      uri = Channel.socket_uri("ws://a.test/agent/websocket?x=1", :controller)
+      assert URI.parse(uri).path == "/agent/websocket"
+      assert URI.decode_query(URI.parse(uri).query)["x"] == "1"
+      assert URI.decode_query(URI.parse(uri).query)["role"] == "controller"
+    end
+
+    test "an unknown role is refused at start" do
+      assert_raise ArgumentError, fn ->
+        Channel.start_link(uri: "ws://a.test/agent", role: :admin, test_mode?: true)
+      end
+    end
   end
 
   test "a disconnect (Airo down) does not crash the client", %{client: client} do

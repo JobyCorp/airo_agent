@@ -22,7 +22,11 @@ defmodule AiroAgent.Application do
         # One supervised OS process per *running* engine instance.
         AiroAgent.Instances,
         # Canonical in-memory state + lifecycle-event emitter; load/unload route here.
-        AiroAgent.Fleet
+        AiroAgent.Fleet,
+        # Names the channel clients (one per airo endpoint, S26) so publish/1
+        # can fan out to all of them. Always started: it costs nothing and the
+        # tests start channels without the notifier supervisor.
+        {Registry, keys: :unique, name: AiroAgent.Notifier.Registry}
       ] ++
         peer_rank_children() ++
         notifier_children() ++
@@ -35,8 +39,9 @@ defmodule AiroAgent.Application do
     Supervisor.start_link(children, opts)
   end
 
-  # Start the slipstream channel client only when it's the configured notifier
-  # (i.e. AIRO_SOCKET_URL is set). Otherwise the Log notifier needs no process.
+  # Start the slipstream channel clients only when the channel is the configured
+  # notifier (i.e. at least one airo endpoint is set). Otherwise the Log
+  # notifier needs no process.
   #
   # Run it under its own supervisor (not as a bare sibling of Fleet/Instances) so
   # a channel crash-loop is contained there and can never exhaust this
