@@ -37,6 +37,7 @@
     "dtype": "auto",
     "entrypoint": "bash",
     "extra_argv": [
+      "--enable-prompt-tokens-details",
       "--max-num-batched-tokens",
       "2048",
       "--long-prefill-token-threshold",
