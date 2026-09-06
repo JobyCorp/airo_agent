@@ -2,15 +2,20 @@
 
 Host-side model-serving **control plane**, consumed by Airo.
 
-`airo_agent` runs on each model-serving host. It starts/stops local inference
-engines (`llama-server` now; vLLM/TGI later), swaps which model each one serves,
-surfaces local-model provenance (the Hugging Face snapshot revision), and reports
-host GPU telemetry — pushing all of it to Airo over a channel so Airo never polls.
-
-It is **not** a server of models and **not** a provider. The engine is the
-server; Airo is the brain. This app is the mechanism in between.
-
 > **Engine serves. Agent controls. Airo decides.**
+
+## What
+
+`airo_agent` is a small OTP release that runs on **each GPU serving host**
+(x86 boxes and arm64 DGX Sparks alike). It starts, supervises and stops the
+local inference engines — `llama-server` and vLLM today — swaps which model each
+one serves, scans the local Hugging Face cache for provenance, reads GPU
+telemetry, and **pushes** all of that to Airo over a Phoenix channel. Airo
+commands it back over a small HTTP control API.
+
+It is **not** a server of models and **not** a provider. Each engine it spawns
+is a real OpenAI-compatible endpoint on a fixed port — a *slot* — and Airo routes
+inference **straight to that port**. The agent is never on the inference path.
 
 | Layer | Owns |
 |---|---|
@@ -18,8 +23,77 @@ server; Airo is the brain. This app is the mechanism in between.
 | **airo_agent** | for engines it spawned: load/unload/swap, provenance inventory, host telemetry, health push. Never on the inference path. |
 | **Airo** | routing, load/evict/VRAM policy, the model shelf. |
 
-See [`DESIGN.md`](DESIGN.md) for the full design (Model 2: one agent, N
-slot-providers) — it is the source of truth.
+## Why
+
+Airo can talk to any OpenAI-compatible engine directly, so why an agent?
+
+- **Someone has to own the GPU.** Which model is resident, how much VRAM is
+  left, whether a swap will fit — these are *host* facts, and the engines
+  themselves don't know or report them. One agent per host owns that view and
+  pushes it, so Airo never polls and never guesses.
+- **Provenance the engines can't give.** Ollama and LM Studio serve a model
+  by a friendly name; they don't tell you *which* artifact. The agent resolves
+  the Hugging Face snapshot commit (`revision`) for every local model, so Airo's
+  model shelf and usage attribution are keyed to the exact weights that served.
+- **Loading is control, not config.** Putting a model into a slot is an
+  operational act on the engine, not a routing binding. Keeping that in a
+  separate layer means Airo's routes and the host's resident state can differ
+  on purpose, and a crashed engine is an event Airo reacts to rather than a
+  config drift it discovers later.
+- **Crash isolation.** A CUDA OOM or a segfault in an engine kills one
+  supervised OS process, never the agent, and the agent going away never kills
+  the engine (a hard-restarted agent reaps orphans on the next boot). Airo
+  being down never takes serving down either — the channel client runs under
+  its own wide-budget supervisor.
+- **More than one Airo can watch.** An agent pushes to exactly **one
+  controller** (`AIRO_SOCKET_URL`) and any number of **observers**
+  (`AIRO_OBSERVER_SOCKET_URLS`). Observers get the same stream and may route to
+  the slots, but the controller alone may load and unload. That is how a dev
+  Airo on a workstation sees the production fleet live without being able to
+  disturb it.
+
+## How
+
+**Two channels, two directions.** The agent is the WebSocket *client*: it joins
+Airo's `/agent` socket as `agent:<host_id>` and pushes a full `register`
+(identity + every slot + GPU) on join, on every rejoin, and as a 10 s heartbeat,
+plus a `slot` message on each transition (`loading → up | down | failed`). Airo
+*commands* it over HTTP on `control_url` (`POST /load`, `POST /unload`, …) and
+only ever gets an "accepted" back — the result arrives as a push. If the socket
+drops or the heartbeats stop, Airo marks the host disconnected or stale and its
+deployments unknown.
+
+**Slots.** `AIRO_AGENT_SLOTS` is a CSV of serving ports; each holds at most one
+resident model. `Fleet` is the lifecycle brain (one GenServer, canonical state);
+`Instance` owns one engine OS process via `MuonTrap.Daemon` and polls readiness;
+a swap is unload-then-load with the intent recorded first, so a `:DOWN` can be
+told apart from a crash.
+
+**Engine-neutral seam.** Adapters (`Engine.LlamaCpp`, `Engine.Vllm`) are pure:
+`inventory/1` scans, `launch_spec/3` builds argv and env, neither spawns. The
+same launch *profile* is portable across hosts; keys an engine doesn't read are
+dropped and logged. Two contracts differ and are easy to get wrong — llama.cpp's
+`-c` is the **total** KV budget (`ctx × parallel`), vLLM's `--max-model-len` is
+the **per-request** window — see the adapter moduledocs.
+
+**vLLM runs in a container.** The `:vllm` "binary" is `priv/engine/vllm-slot`, a
+bash wrapper around `docker`/`podman run` that adds the boilerplate (GPU flags,
+`--ipc=host`, the HF cache mount, read-only file overlays for patched
+tokenizer/kernel files), names the container `airo-slot-<port>`, and waits for
+the runtime to release that name before relaunching. In cluster mode it also
+starts rank 1 on the worker Spark over SSH so both ranks share one supervised
+lifetime. It is bash 3.2 safe, so its tests run on macOS too.
+
+**Deploy.** `bin/deploy.sh` builds a glibc-matched release per architecture in a
+container and rolls it to hosts **one at a time** with a health gate, because
+restarting an agent drains every engine it owns. Config is entirely env
+(`/etc/airo-agent.env`, installed from `deploy/hosts/<host>.env`).
+
+Design: [`DESIGN.md`](DESIGN.md) is the source of truth (Model 2: one agent, N
+slot-providers); [`DESIGN-vllm.md`](DESIGN-vllm.md) and
+[`DESIGN-cluster-slots.md`](DESIGN-cluster-slots.md) cover the vLLM and two-host
+specifics; roles and liveness are specified in Airo's
+`docs/design/DESIGN-agent-lifecycle-and-roles.md`.
 
 ## Control API
 
