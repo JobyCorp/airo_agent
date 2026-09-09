@@ -56,7 +56,7 @@
       "--chat-template",
       "/opt/glm53/chat_template.jinja",
       "--limit-mm-per-prompt",
-      "{\"image\":4,\"video\":1}",
+      "{\"image\":10,\"video\":1}",
       "--skip-mm-profiling",
       "--tool-call-parser",
       "glm47",
