@@ -23,6 +23,8 @@
     "dtype": "auto",
     "entrypoint": "vllm",
     "extra_argv": [
+      "--limit-mm-per-prompt",
+      "{\"image\":10,\"video\":1}",
       "--enable-prompt-tokens-details",
       "--enable-prefix-caching",
       "--enable-expert-parallel",
@@ -49,10 +51,12 @@
     ],
     "gpu_memory_utilization": 0.835,
     "image": "vllm/vllm-openai:qwen38-flash-next",
-    "kv_cache_dtype": "auto",
+    "kv_cache_dtype": "fp8",
     "nnodes": 2,
     "overlay_files": {
-      "/home/jody/airo-agent-overlays/qwen38/ple_layer.py": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py"
+      "/home/jody/airo-agent-overlays/qwen38/ple_layer.py": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py",
+      "/home/jody/airo-agent-overlays/qwen38/qsa_nvidia.py": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/qsa.py",
+      "/home/jody/airo-agent-overlays/qwen38/qsa_ops.py": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ops/qsa.py"
     },
     "parallel": 8,
     "tensor_parallel_size": 2,
